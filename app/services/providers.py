@@ -9,6 +9,7 @@ Handles:
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Coroutine, List, Tuple
 
 import httpx
@@ -69,7 +70,22 @@ class ProviderClient:
                 request=response.request,
                 response=response,
             )
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            logger.error(
+                "STT API returned non-JSON response | provider={} | model={} | status={} | body_preview={} | {}",
+                self._base_url,
+                model,
+                response.status_code,
+                (response.text or "")[:512],
+                e,
+                exc_info=True,
+            )
+            raise ProviderError(
+                f"STT API '{self._base_url}' returned invalid JSON (status {response.status_code}): {e}. "
+                f"Body preview: {(response.text or '')[:512]}"
+            ) from e
 
         # Safe extraction of metadata (different providers may have different formats)
         logger.debug(
@@ -105,7 +121,22 @@ class ProviderClient:
                 request=response.request,
                 response=response,
             )
-        data = response.json()
+        try:
+            data = response.json()
+        except json.JSONDecodeError as e:
+            logger.error(
+                "Chat API returned non-JSON response | provider={} | model={} | status={} | body_preview={} | {}",
+                self._base_url,
+                model,
+                response.status_code,
+                (response.text or "")[:512],
+                e,
+                exc_info=True,
+            )
+            raise ProviderError(
+                f"Chat API '{self._base_url}' returned invalid JSON (status {response.status_code}): {e}. "
+                f"Body preview: {(response.text or '')[:512]}"
+            ) from e
 
         # Safe extraction of usage metadata
         usage = data.get("usage", {})
@@ -212,10 +243,11 @@ async def call_with_fallback(
                 )
             )
             logger.debug(
-                "Model {}/{} failed, will try next: {}",
+                "Model {}/{} failed, will try next | {}",
                 provider_client._provider_id or provider_client.base_url,
                 model_name,
                 e,
+                exc_info=True,
             )
             continue
         except Exception:

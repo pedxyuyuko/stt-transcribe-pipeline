@@ -86,6 +86,7 @@ async def _handle_transcription(
             e.block_tag,
             e.task_tag,
             e.original_error,
+            exc_info=True,
         )
         return _openai_error(
             message=f"Pipeline error in block '{e.block_tag}', task '{e.task_tag}': {e.original_error}",
@@ -100,6 +101,7 @@ async def _handle_transcription(
             e.failed_block,
             e.failed_task,
             elapsed,
+            exc_info=True,
         )
 
         if response_format == "text":
@@ -115,7 +117,7 @@ async def _handle_transcription(
         else:
             return JSONResponse(content={"text": fallback_text})
     except AllModelsFailedError as e:
-        logger.error("All models failed: {}", e)
+        logger.error("All models failed: {}", e, exc_info=True)
         return _openai_error(
             message=f"All models failed: {e}",
             error_type="server_error",
