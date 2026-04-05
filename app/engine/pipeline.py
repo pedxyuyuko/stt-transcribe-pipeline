@@ -11,6 +11,7 @@ from app.engine.resolver import resolve_variables, ResultStore
 from app.services.providers import ProviderClient, resolve_model, call_with_fallback
 from app.services.stt import execute_stt_task
 from app.services.llm import execute_chat_task
+from loguru import logger
 
 
 class PipelineError(Exception):
@@ -36,8 +37,14 @@ async def run_pipeline(
     audio_bytes: bytes,
 ) -> ResultStore:
     results: ResultStore = {}
+    logger.debug("Starting pipeline | blocks={}", len(preset.blocks))
 
     for block in preset.blocks:
+        logger.debug(
+            "Executing block '{}' | tasks={}",
+            block.tag,
+            [t.tag for t in block.tasks],
+        )
         coros: list[object] = []
         task_keys: list[tuple[str, str]] = []
 
@@ -46,6 +53,13 @@ async def run_pipeline(
                 task.model, models_config
             )
             task_keys.append((block.tag, task.tag))
+            logger.debug(
+                "  Task '{}.{}' | type={} | model={}",
+                block.tag,
+                task.tag,
+                task.type,
+                task.model,
+            )
 
             if task.type == "transcriptions":
 
@@ -95,7 +109,14 @@ async def run_pipeline(
                     original_error=result,
                 )
             results[f"{block_tag}.{task_tag}"] = result
+            logger.debug(
+                "  Task '{}.{}' completed | result_length={}",
+                block_tag,
+                task_tag,
+                len(result) if isinstance(result, str) else "N/A",
+            )
 
+    logger.debug("Pipeline finished | total_results={}", len(results))
     return results
 
 
