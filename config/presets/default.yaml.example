@@ -18,6 +18,7 @@ blocks:
       - tag: "final"
         type: "chat"
         model: "smart"
+        max_retries: 2
         need_audio: true
         prompt: |
           You have two STT transcription results from different models:

@@ -14,3 +14,15 @@ model_groups:
     - "openai/gpt-4o"
     - "openai/gpt-4o-mini"
 log_level: "INFO"
+
+# Pipeline preset example (in config/presets/)
+# Each task can optionally set `max_retries: N` to auto-retry on LM failure.
+# `max_retries` specifies how many times to automatically retry a task if the LM call fails.
+# Default is 0 (no retries). Set to a positive integer to enable automatic retries.
+#
+# Example:
+#   - tag: "my-task"
+#     type: "chat"
+#     model: "smart"
+#     max_retries: 2  # Retry up to 2 times on failure
+#     prompt: "Your prompt here."

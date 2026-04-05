@@ -50,6 +50,7 @@ class TaskConfig(BaseModel):
     model: str
     need_audio: bool = False
     prompt: str | None = None
+    max_retries: int = 0
 
 
 class BlockConfig(BaseModel):

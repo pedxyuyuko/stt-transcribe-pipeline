@@ -8,8 +8,14 @@ import httpx
 
 from app.config.schema import PipelineConfig, AppConfig, TaskConfig
 from app.engine.resolver import resolve_variables, ResultStore
-from app.services.providers import ProviderClient, resolve_model, call_with_fallback
+from app.services.providers import (
+    ProviderClient,
+    resolve_model,
+    call_with_fallback,
+    AllModelsFailedError,
+)
 from app.services.stt import execute_stt_task
+
 from app.services.llm import execute_chat_task
 from loguru import logger
 
@@ -28,6 +34,35 @@ class PipelineError(Exception):
         super().__init__(
             f"Pipeline error in block '{block_tag}', task '{task_tag}': {original_error}"
         )
+
+
+async def _call_task_with_retries(
+    max_retries: int,
+    *,
+    models: list[tuple[ProviderClient, str]],
+    call_fn,
+    task_path: str,
+) -> str:
+    """Retry call_with_fallback on AllModelsFailedError / ConnectError."""
+    attempt = 0
+    while True:
+        try:
+            return await call_with_fallback(
+                models=models,
+                call_fn=call_fn,
+                task_path=task_path,
+            )
+        except (AllModelsFailedError, httpx.ConnectError) as exc:
+            attempt += 1
+            if attempt > max_retries:
+                raise
+            logger.warning(
+                "Task '{}' failed (attempt {}/{}), retrying | {}",
+                task_path,
+                attempt,
+                max_retries + 1,
+                exc,
+            )
 
 
 async def run_pipeline(
@@ -73,7 +108,8 @@ async def run_pipeline(
                     )
 
                 coros.append(
-                    call_with_fallback(
+                    _call_task_with_retries(
+                        max_retries=getattr(task, "max_retries", 0),
                         models=model_list,
                         call_fn=_stt,
                         task_path=f"{block.tag}.{task.tag}",
@@ -103,7 +139,8 @@ async def run_pipeline(
                     )
 
                 coros.append(
-                    call_with_fallback(
+                    _call_task_with_retries(
+                        max_retries=getattr(task, "max_retries", 0),
                         models=model_list,
                         call_fn=_chat,
                         task_path=f"{block.tag}.{task.tag}",
