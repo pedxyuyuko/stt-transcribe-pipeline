@@ -1,4 +1,5 @@
 .sisyphus/
+AGENTS.md
 
 # Sensitive config (API keys)
 config/models.yaml
