@@ -53,6 +53,7 @@ class TaskConfig(BaseModel):
     need_audio: bool = False
     prompt: str | None = None
     max_retries: int = 0
+    timeout: float | None = None
 
 
 class BlockConfig(BaseModel):
