@@ -179,7 +179,7 @@ Tasks within a block execute in parallel. Both `correct_grammar` and `fix_punctu
 
 Variable substitution allows later blocks to reference the output of earlier blocks. The syntax is `{block_tag.task_tag.result}`. For example, in Block 3 you might reference the output of the correction task from Block 2 as `{correction.correct_grammar.result}`.
 
-Checkpoints are created after each successful block. If a later block fails and retries are exhausted, the pipeline falls back to the last checkpointed result rather than returning an error. This means a request can still return useful transcription even if the correction step fails.
+A block can declare a checkpoint by setting the `checkpoint` field to one of its task tags. If a later block fails and retries are exhausted, the pipeline falls back to the last checkpointed result rather than returning an error. This means a request can still return useful transcription even if the correction step fails.
 
 Model fallback chains are configured as named groups in `config/config.yml`. When a task references a group name, the system tries each model in the group in order. This lets you specify a primary provider with a cheaper or local fallback.
 
@@ -205,6 +205,9 @@ stt-transcribe-pipeline/
 ├── config/
 │   ├── config.example.yml   # Configuration template
 │   └── presets/             # Pipeline preset definitions
+├── docs/
+│   ├── configuration.en.md  # Configuration reference (English)
+│   └── configuration.zh-CN.md # Configuration reference (Chinese)
 ├── tests/                   # pytest test suite
 ├── docker-compose.yml       # Docker Compose configuration
 ├── Dockerfile               # Multi-stage Docker build

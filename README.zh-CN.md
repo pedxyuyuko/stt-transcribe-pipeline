@@ -157,7 +157,7 @@ Block 1 [stt]          Block 2 [correct]
 
 ### 失败回退
 
-- **重试**：配置 `max_retries` 后，失败的 Task 自动重试。可捕获 `HTTPStatusError` 和 `ConnectError`
+- **重试**：配置 `max_retries` 后，失败的 Task 自动重试。可捕获 `HTTPStatusError`、`ConnectError` 和 `TimeoutException`
 - **模型组**：当使用模型组名称而非具体模型时，系统按列表顺序依次尝试，直到某个模型成功响应
 - **检查点**：Block 可以设置 `checkpoint`，保存该 Block 的结果。如果后续 Block 失败，流水线返回最近一个检查点的结果，而不是报错
 
@@ -170,6 +170,8 @@ Block 1 [stt]          Block 2 [correct]
 ```
 stt-transcribe-pipeline/
 ├── main.py                  # FastAPI 应用入口、生命周期管理、认证中间件
+├── Dockerfile               # 多阶段构建（python:3.12-slim）
+├── docker-compose.yml       # Docker Compose 配置（Docker Hub 预构建镜像）
 ├── app/
 │   ├── api/
 │   │   ├── transcription.py # POST /v1/audio/transcriptions 端点
@@ -187,7 +189,11 @@ stt-transcribe-pipeline/
 ├── config/
 │   ├── config.example.yml   # 应用配置模板
 │   └── presets/             # 流水线预设目录
-└── tests/                   # pytest-asyncio + pytest-httpx 测试集
+├── docs/
+│   ├── configuration.en.md  # 配置参考文档（英文）
+│   └── configuration.zh-CN.md # 配置参考文档（中文）
+├── tests/                   # pytest-asyncio + pytest-httpx 测试集
+└── pyproject.toml           # 项目元数据和依赖
 ```
 
 ## 开发
