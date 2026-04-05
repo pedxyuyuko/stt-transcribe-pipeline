@@ -123,3 +123,4 @@ class PipelineConfig(BaseModel):
 class ProviderConfig(BaseModel):
     base_url: str
     api_key: str
+    headers: Dict[str, str] | None = None

@@ -39,10 +39,17 @@ class ProviderError(Exception):
 class ProviderClient:
     """Wraps a single provider's config (base_url, api_key)."""
 
-    def __init__(self, base_url: str, api_key: str, provider_id: str = ""):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        provider_id: str = "",
+        headers: dict[str, str] | None = None,
+    ):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._provider_id = provider_id
+        self._headers = headers or {}
 
     @property
     def base_url(self) -> str:
@@ -76,11 +83,12 @@ class ProviderClient:
             },
         )
 
+        headers = {"Authorization": f"Bearer {self._api_key}", **self._headers}
         response = await client.post(
             f"{self._base_url}/audio/transcriptions",
             files=files,
             data=data,
-            headers={"Authorization": f"Bearer {self._api_key}"},
+            headers=headers,
             timeout=timeout,
         )
         if response.is_error:
@@ -142,13 +150,15 @@ class ProviderClient:
             },
         )
 
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            **self._headers,
+        }
         response = await client.post(
             f"{self._base_url}/chat/completions",
             json=body,
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             timeout=timeout,
         )
         if response.is_error:
@@ -222,6 +232,7 @@ def resolve_model(model_field: str, app_config) -> List[Tuple[ProviderClient, st
             base_url=provider.base_url,
             api_key=provider.api_key,
             provider_id=provider_id,
+            headers=provider.headers,
         )
         return [(client, model_name)]
     else:
@@ -242,6 +253,7 @@ def resolve_model(model_field: str, app_config) -> List[Tuple[ProviderClient, st
                 base_url=provider.base_url,
                 api_key=provider.api_key,
                 provider_id=provider_id,
+                headers=provider.headers,
             )
             results.append((client, model_name))
 
