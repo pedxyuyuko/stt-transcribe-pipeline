@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Form, UploadFile, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
+from loguru import logger
 
 from app.config.schema import PipelineConfig
 from app.engine.pipeline import run_pipeline, get_pipeline_output, PipelineError
 from app.services.providers import AllModelsFailedError
+from app.logger import generate_session_id, set_session_id
 
 router = APIRouter()
 
@@ -37,12 +41,31 @@ async def _handle_transcription(
     response_format: str,
     temperature: float | None,
 ):
+    session_id = generate_session_id()
+    set_session_id(session_id)
+
     audio_bytes = await file.read()
+
+    # --- log request metadata (info level) ---
+    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if not client_ip:
+        client_ip = request.client.host if request.client else "unknown"
+    logger.info(
+        "Transcription request received | ip={} | audio_size={} bytes | preset={}",
+        client_ip,
+        len(audio_bytes),
+        getattr(preset, "output", "unknown"),
+    )
+
     if len(audio_bytes) > MAX_AUDIO_SIZE:
+        logger.warning("Audio file too large: {} bytes", len(audio_bytes))
         return JSONResponse(
             status_code=413,
             content=ERROR_FILE_TOO_LARGE,
         )
+
+    # --- start timer ---
+    start_time = time.monotonic()
 
     try:
         results = await run_pipeline(
@@ -52,19 +75,31 @@ async def _handle_transcription(
             audio_bytes=audio_bytes,
         )
     except PipelineError as e:
+        logger.error(
+            "Pipeline error in block '{}', task '{}': {}",
+            e.block_tag,
+            e.task_tag,
+            e.original_error,
+        )
         return _openai_error(
             message=f"Pipeline error in block '{e.block_tag}', task '{e.task_tag}': {e.original_error}",
             error_type="server_error",
             code="pipeline_error",
         )
     except AllModelsFailedError as e:
+        logger.error("All models failed: {}", e)
         return _openai_error(
             message=f"All models failed: {e}",
             error_type="server_error",
             code="all_models_failed",
         )
 
+    # --- end timer + elapsed time log (info level) ---
+    elapsed = time.monotonic() - start_time
     final_text = get_pipeline_output(preset.output, results)
+
+    logger.info("Pipeline completed | elapsed={:.3f}s", elapsed)
+    logger.debug("Final transcription result: {}", final_text)
 
     if response_format == "text":
         return PlainTextResponse(content=final_text)
