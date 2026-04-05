@@ -21,7 +21,12 @@ class AllModelsFailedError(Exception):
 
     def __init__(self, errors: List[Tuple[str, Exception]]):
         self.errors = errors
-        error_messages = "; ".join(f"{model}: {e}" for model, e in errors)
+
+        def _fmt(e: Exception) -> str:
+            msg = str(e)
+            return msg if msg else f"[no details, type={type(e).__name__}]"
+
+        error_messages = "; ".join(f"{model}: {_fmt(e)}" for model, e in errors)
         super().__init__(f"All models failed: {error_messages}")
 
 
@@ -56,12 +61,11 @@ class ProviderClient:
         files = {
             "file": (filename, audio_bytes, "application/octet-stream"),
         }
-        data = {"model": model}
+        data = {"model": model, "stream": False}
         if prompt is not None:
             data["prompt"] = prompt
         if model_params:
-            for key, value in model_params.items():
-                data[key] = str(value) if not isinstance(value, str) else value
+            data.update(model_params)
 
         response = await client.post(
             f"{self._base_url}/audio/transcriptions",
@@ -97,9 +101,9 @@ class ProviderClient:
         logger.debug(
             "STT API response | provider={} | model={} | language={} | duration={}",
             self._base_url,
-            data.get("model", "unknown"),
-            data.get("language", "unknown"),
-            data.get("duration", "unknown"),
+            data.get("model") or "N/A",
+            data.get("language") or "N/A",
+            data.get("duration", "N/A"),
         )
 
         return data["text"]
@@ -115,6 +119,7 @@ class ProviderClient:
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
+            "stream": False,
         }
         if model_params:
             body.update(model_params)
@@ -249,6 +254,11 @@ async def call_with_fallback(
             result = await call_fn(provider_client, model_name)
             return result
         except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as e:
+
+            def _exception_detail(exc: Exception) -> str:
+                msg = str(exc)
+                return msg if msg else f"[{type(exc).__name__}]"
+
             errors.append(
                 (
                     f"{provider_client._provider_id or provider_client.base_url}/{model_name}",
@@ -259,7 +269,7 @@ async def call_with_fallback(
                 "Model {}/{} failed, will try next | {}",
                 provider_client._provider_id or provider_client.base_url,
                 model_name,
-                e,
+                _exception_detail(e),
                 exc_info=True,
             )
             continue
@@ -267,5 +277,14 @@ async def call_with_fallback(
             # Non-retryable errors — re-raise immediately
             raise
 
-    logger.error("All models exhausted | tried={}", len(errors))
+    def _all_errors_text(errors: List[Tuple[str, Exception]]) -> str:
+        def _fmt(e: Exception) -> str:
+            msg = str(e)
+            return msg if msg else f"[no details, type={type(e).__name__}]"
+
+        return "; ".join(f"{model}: {_fmt(e)}" for model, e in errors)
+
+    logger.error(
+        "All models exhausted | tried={} | {}", len(errors), _all_errors_text(errors)
+    )
     raise AllModelsFailedError(errors)

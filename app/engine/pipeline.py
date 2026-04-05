@@ -86,12 +86,17 @@ async def _call_task_with_retries(
             attempt += 1
             if attempt > max_retries:
                 raise
+
+            def _exception_detail(exc: Exception) -> str:
+                msg = str(exc)
+                return msg if msg else f"[{type(exc).__name__}]"
+
             logger.warning(
                 "Task '{}' failed (attempt {}/{}), retrying | {}",
                 task_path,
                 attempt,
                 max_retries + 1,
-                exc,
+                _exception_detail(exc),
                 exc_info=True,
             )
 

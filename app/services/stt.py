@@ -10,6 +10,15 @@ from app.config.schema import TaskConfig
 from app.services.providers import ProviderClient
 
 
+def _format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes}B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f}KB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.1f}MB"
+
+
 async def execute_stt_task(
     provider_client: ProviderClient,
     task: TaskConfig,
@@ -20,8 +29,7 @@ async def execute_stt_task(
     """
     Execute an STT transcription task.
 
-    Sends audio as multipart form to the provider's /audio/transcriptions endpoint.
-    Returns the "text" field from the JSON response.
+    POSTs audio to the provider's STT endpoint and returns the transcription text.
 
     Args:
         provider_client: The resolved provider client
@@ -37,9 +45,9 @@ async def execute_stt_task(
         httpx.HTTPStatusError: On non-2xx response (for fallback to catch)
     """
     logger.debug(
-        "STT task executing | model={} | audio_size={} bytes | prompt={}",
+        "STT task executing | model={} | audio_size={} | prompt={}",
         model_name,
-        len(audio_bytes),
+        _format_size(len(audio_bytes)),
         task.prompt or "(none)",
     )
 
