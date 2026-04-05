@@ -33,9 +33,10 @@ class ProviderError(Exception):
 class ProviderClient:
     """Wraps a single provider's config (base_url, api_key)."""
 
-    def __init__(self, base_url: str, api_key: str):
+    def __init__(self, base_url: str, api_key: str, provider_id: str = ""):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self._provider_id = provider_id
 
     @property
     def base_url(self) -> str:
@@ -62,7 +63,12 @@ class ProviderClient:
             data=data,
             headers={"Authorization": f"Bearer {self._api_key}"},
         )
-        response.raise_for_status()
+        if response.is_error:
+            raise httpx.HTTPStatusError(
+                response.text,
+                request=response.request,
+                response=response,
+            )
         data = response.json()
 
         # Safe extraction of metadata (different providers may have different formats)
@@ -93,7 +99,12 @@ class ProviderClient:
                 "Content-Type": "application/json",
             },
         )
-        response.raise_for_status()
+        if response.is_error:
+            raise httpx.HTTPStatusError(
+                response.text,
+                request=response.request,
+                response=response,
+            )
         data = response.json()
 
         # Safe extraction of usage metadata
@@ -140,7 +151,11 @@ def resolve_model(model_field: str, app_config) -> List[Tuple[ProviderClient, st
             raise ConfigError(f"Provider '{provider_id}' not found in config")
 
         provider = providers[provider_id]
-        client = ProviderClient(base_url=provider.base_url, api_key=provider.api_key)
+        client = ProviderClient(
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            provider_id=provider_id,
+        )
         return [(client, model_name)]
     else:
         # Model group reference (fallback chain)
@@ -157,7 +172,9 @@ def resolve_model(model_field: str, app_config) -> List[Tuple[ProviderClient, st
 
             provider = providers[provider_id]
             client = ProviderClient(
-                base_url=provider.base_url, api_key=provider.api_key
+                base_url=provider.base_url,
+                api_key=provider.api_key,
+                provider_id=provider_id,
             )
             results.append((client, model_name))
 
@@ -178,16 +195,25 @@ async def call_with_fallback(
     errors: List[Tuple[str, Exception]] = []
 
     for provider_client, model_name in models:
-        logger.debug("Trying model: {}/{}", provider_client.base_url, model_name)
+        logger.debug(
+            "Trying model: {}/{}",
+            provider_client._provider_id or provider_client.base_url,
+            model_name,
+        )
         try:
             # call_fn is awaited with provider, httpx_client, model_name
             result = await call_fn(provider_client, model_name)
             return result
         except (httpx.HTTPStatusError, httpx.ConnectError) as e:
-            errors.append((f"{provider_client.base_url}/{model_name}", e))
+            errors.append(
+                (
+                    f"{provider_client._provider_id or provider_client.base_url}/{model_name}",
+                    e,
+                )
+            )
             logger.debug(
                 "Model {}/{} failed, will try next: {}",
-                provider_client.base_url,
+                provider_client._provider_id or provider_client.base_url,
                 model_name,
                 e,
             )
