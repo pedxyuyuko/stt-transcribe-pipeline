@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
     app.state.app_config = app_config
     app.state.presets = presets
 
+    from app.logger import setup_logging
+
+    setup_logging(app_config.log_level)
+
     client = httpx.AsyncClient(
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         timeout=httpx.Timeout(connect=10, read=120, write=30, pool=15),
