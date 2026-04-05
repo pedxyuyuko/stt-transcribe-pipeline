@@ -182,6 +182,7 @@ log_level: "INFO"
 | `need_audio` | 布尔 | `false` | 否 | 是否在请求中包含音频数据。仅对 `"chat"` 类型有意义，此时音频以 base64 编码的 WAV 格式放入 `input_audio` 内容块中。对 `"transcriptions"` 类型无效（该类型始终发送音频）。 |
 | `prompt` | 字符串 | `null` | 否 | 提示文本。对 `"transcriptions"` 任务，作为 `prompt` 表单字段发送。对 `"chat"` 任务，用作用户消息的文本内容。支持变量替换。 |
 | `max_retries` | 整型 | `0` | 否 | 在整个回退链全部失败后的重试次数。每次重试重新尝试完整链路。 |
+| `timeout` | 浮点数 | `null` | 否 | 单次尝试 task 的最大等待时间（秒）。超时视为立即失败，且**不会**触发重试。如果有可用的检查点，则返回检查点回退值。 |
 
 **任务类型说明：**
 
@@ -276,9 +277,12 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
   │    │    │
   │    │    ├── resolve_variables(prompt, results)  [仅 chat 类型]
   │    │    │
-  │    │    └── _call_task_with_retries(max_retries, models, call_fn)
-  │    │         │
-  │    │         ├── call_with_fallback(models, call_fn)
+│    │    └── _call_task_with_retries(max_retries, timeout, models, call_fn)
+│    │         │
+│    │         ├── 如果设置了 timeout: 通过 asyncio.wait_for(timeout) 限时等待
+│    │         ├── 遇到 asyncio.TimeoutError: 标记为失败（不重试）
+│    │         │
+│    │         ├── call_with_fallback(models, call_fn)
   │    │         │    │
   │    │         │    ├── 遍历 models 中的每个 (client, model):
   │    │         │    │    ├── await call_fn(client, model)
@@ -307,8 +311,9 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
 - **block 按顺序执行。** 每个 block 必须完成后下一个才能开始。
 - **同一个 block 内的 task 并行执行。** 所有 task 通过 `asyncio.gather(return_exceptions=True)` 收集。如果有 task 抛出异常，则抛出 `PipelineError`。
 - **重试逻辑重试的是整个回退链**，而非单个模型。`max_retries: 2` 表示整条链路最多尝试 3 次（1 次初始 + 2 次重试）。
+- **超时应用于每次单独尝试。** 如果 task 设置了 `timeout: 30` 且 `max_retries: 2`，则 3 次尝试各有 30 秒的期限。任何单次尝试超时都会立即失败（且**不会**重试，因为超时不属于可重试错误）。
 - **可重试的错误：** `AllModelsFailedError`、`httpx.ConnectError`。
-- **不可重试的错误**（以上两种之外的任何错误）会立即重新抛出，不重试。
+- **不可重试的错误**（以上两种之外的任何错误，包括 `asyncio.TimeoutError`）会立即重新抛出，不重试。
 - **检查点回退**仅在后续 block 失败且之前某个 block 的检查点已保存时才会触发。如果失败的 block 自身也设置了检查点，该检查点此时还不可用（它在 block 成功完成后才保存）。
 
 ---
