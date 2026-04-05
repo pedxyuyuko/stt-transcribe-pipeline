@@ -13,6 +13,16 @@ class AppConfig(BaseModel):
     default_preset: str
     providers: Dict[str, ProviderConfig] = {}
     model_groups: Dict[str, List[str]] = {}
+    log_level: str = "INFO"
+
+    @field_validator("log_level")
+    @classmethod
+    def log_level_valid(cls, v: str) -> str:
+        valid_levels = {"TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        v = v.upper()
+        if v not in valid_levels:
+            raise ValueError(f"log_level must be one of {valid_levels}, got '{v}'.")
+        return v
 
     @field_validator("api_key")
     @classmethod

@@ -13,3 +13,4 @@ model_groups:
   smart:
     - "openai/gpt-4o"
     - "openai/gpt-4o-mini"
+log_level: "INFO"
