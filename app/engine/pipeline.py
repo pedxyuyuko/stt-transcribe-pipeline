@@ -72,7 +72,13 @@ async def run_pipeline(
                         model_name=mn,
                     )
 
-                coros.append(call_with_fallback(models=model_list, call_fn=_stt))
+                coros.append(
+                    call_with_fallback(
+                        models=model_list,
+                        call_fn=_stt,
+                        task_path=f"{block.tag}.{task.tag}",
+                    )
+                )
 
             elif task.type == "chat":
                 resolved_prompt = task.prompt or ""
@@ -96,8 +102,13 @@ async def run_pipeline(
                         model_name=mn,
                     )
 
-                coros.append(call_with_fallback(models=model_list, call_fn=_chat))
-
+                coros.append(
+                    call_with_fallback(
+                        models=model_list,
+                        call_fn=_chat,
+                        task_path=f"{block.tag}.{task.tag}",
+                    )
+                )
         task_results = await asyncio.gather(*coros, return_exceptions=True)
 
         for i, result in enumerate(task_results):

@@ -167,21 +167,14 @@ def resolve_model(model_field: str, app_config) -> List[Tuple[ProviderClient, st
 async def call_with_fallback(
     models: List[Tuple[ProviderClient, str]],
     call_fn: Callable[[ProviderClient, str], Coroutine[Any, Any, str]],
+    task_path: str = "",
 ) -> str:
-    """
-    Try each model in order. Catch httpx.HTTPStatusError (5xx) and httpx.ConnectError,
-    try next. Raise AllModelsFailedError if all fail.
+    try:
+        from app.logger import set_context
 
-    Args:
-        models: List of (ProviderClient, model_name) tuples
-        call_fn: Async callable that takes (provider_client, model_name) and returns str
-
-    Returns:
-        The result string from the first successful call
-
-    Raises:
-        AllModelsFailedError: If all models in the chain fail
-    """
+        set_context(task_path=task_path)
+    except Exception:
+        pass
     errors: List[Tuple[str, Exception]] = []
 
     for provider_client, model_name in models:

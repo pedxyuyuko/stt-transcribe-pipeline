@@ -9,7 +9,7 @@ from loguru import logger
 from app.config.schema import PipelineConfig
 from app.engine.pipeline import run_pipeline, get_pipeline_output, PipelineError
 from app.services.providers import AllModelsFailedError
-from app.logger import generate_session_id, set_session_id
+from app.logger import generate_session_id, set_session_id, set_context
 
 router = APIRouter()
 
@@ -34,6 +34,7 @@ def _openai_error(message: str, error_type: str, code: str) -> JSONResponse:
 async def _handle_transcription(
     request: Request,
     preset: PipelineConfig,
+    preset_name: str,
     file: UploadFile,
     model: str,
     language: str | None,
@@ -43,6 +44,7 @@ async def _handle_transcription(
 ):
     session_id = generate_session_id()
     set_session_id(session_id)
+    set_context(preset_name=preset_name)
 
     audio_bytes = await file.read()
 
@@ -51,10 +53,9 @@ async def _handle_transcription(
     if not client_ip:
         client_ip = request.client.host if request.client else "unknown"
     logger.info(
-        "Transcription request received | ip={} | audio_size={} bytes | preset={}",
+        "Transcription request received | ip={} | audio_size={} bytes",
         client_ip,
         len(audio_bytes),
-        getattr(preset, "output", "unknown"),
     )
 
     if len(audio_bytes) > MAX_AUDIO_SIZE:
@@ -131,6 +132,7 @@ async def transcribe_default(
     return await _handle_transcription(
         request=request,
         preset=preset,
+        preset_name=default_preset_name,
         file=file,
         model=model,
         language=language,
@@ -170,6 +172,7 @@ async def transcribe_preset(
     return await _handle_transcription(
         request=request,
         preset=preset,
+        preset_name=preset_name,
         file=file,
         model=model,
         language=language,
