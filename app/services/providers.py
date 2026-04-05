@@ -67,6 +67,15 @@ class ProviderClient:
         if model_params:
             data.update(model_params)
 
+        logger.debug(
+            "STT API request | provider={} | endpoint=/audio/transcriptions | data={}",
+            self._base_url,
+            {
+                k: v[:80] + "..." if isinstance(v, str) and len(v) > 80 else v
+                for k, v in data.items()
+            },
+        )
+
         response = await client.post(
             f"{self._base_url}/audio/transcriptions",
             files=files,
@@ -123,6 +132,15 @@ class ProviderClient:
         }
         if model_params:
             body.update(model_params)
+
+        logger.debug(
+            "Chat API request | provider={} | endpoint=/chat/completions | body={}",
+            self._base_url,
+            {
+                **{k: v for k, v in body.items() if k != "messages"},
+                "messages": body.get("messages"),
+            },
+        )
 
         response = await client.post(
             f"{self._base_url}/chat/completions",

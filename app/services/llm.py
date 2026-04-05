@@ -45,8 +45,6 @@ async def execute_chat_task(
         audio_bytes is not None,
         len(resolved_prompt),
     )
-    logger.debug("Chat task prompt: {}", resolved_prompt)
-
     content: list[dict] = [{"type": "text", "text": resolved_prompt}]
 
     if audio_bytes is not None:
