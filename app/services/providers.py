@@ -29,14 +29,6 @@ class ProviderError(Exception):
     pass
 
 
-# Re-export ModelsConfig and ProviderConfig for type hints
-def _get_models_config():
-    """Lazy import to avoid circular dependency."""
-    from app.config.schema import ModelsConfig, ProviderConfig
-
-    return ModelsConfig, ProviderConfig
-
-
 class ProviderClient:
     """Wraps a single provider's config (base_url, api_key)."""
 
@@ -56,10 +48,6 @@ class ProviderClient:
         prompt: str | None = None,
         filename: str = "audio.wav",
     ) -> str:
-        """
-        POST to {base_url}/audio/transcriptions as multipart form.
-        Returns response.json()["text"].
-        """
         files = {
             "file": (filename, audio_bytes, "application/octet-stream"),
         }
@@ -82,10 +70,6 @@ class ProviderClient:
         messages: list[dict[str, Any]],
         model: str,
     ) -> str:
-        """
-        POST to {base_url}/chat/completions as JSON.
-        Returns response.json()["choices"][0]["message"]["content"].
-        """
         response = await client.post(
             f"{self._base_url}/chat/completions",
             json={
@@ -101,13 +85,13 @@ class ProviderClient:
         return response.json()["choices"][0]["message"]["content"]
 
 
-def resolve_model(model_field: str, models_config) -> List[Tuple[ProviderClient, str]]:
+def resolve_model(model_field: str, app_config) -> List[Tuple[ProviderClient, str]]:
     """
     Parse the model field and return a list of (ProviderClient, model_name) tuples.
 
     Args:
         model_field: Either "provider_id/model_id" (direct) or "group_name" (fallback chain)
-        models_config: ModelsConfig object
+        app_config: AppConfig object with providers and model_groups
 
     Returns:
         List of (ProviderClient, model_name) tuples representing the fallback order
@@ -116,10 +100,10 @@ def resolve_model(model_field: str, models_config) -> List[Tuple[ProviderClient,
         ConfigError: If the model reference is invalid or referenced providers don't exist
     """
     from app.config.loader import ConfigError
+    from app.config.schema import ProviderConfig
 
-    ModelsConfig, ProviderConfig = _get_models_config()
-    providers = models_config.providers
-    model_groups = models_config.model_groups
+    providers = app_config.providers
+    model_groups = app_config.model_groups
 
     if "/" in model_field:
         # Direct provider/model reference
@@ -128,7 +112,7 @@ def resolve_model(model_field: str, models_config) -> List[Tuple[ProviderClient,
         model_name = parts[1]
 
         if provider_id not in providers:
-            raise ConfigError(f"Provider '{provider_id}' not found in models config")
+            raise ConfigError(f"Provider '{provider_id}' not found in config")
 
         provider = providers[provider_id]
         client = ProviderClient(base_url=provider.base_url, api_key=provider.api_key)
@@ -136,7 +120,7 @@ def resolve_model(model_field: str, models_config) -> List[Tuple[ProviderClient,
     else:
         # Model group reference (fallback chain)
         if model_field not in model_groups:
-            raise ConfigError(f"Model group '{model_field}' not found in models config")
+            raise ConfigError(f"Model group '{model_field}' not found in config")
 
         results = []
         for entry in model_groups[model_field]:

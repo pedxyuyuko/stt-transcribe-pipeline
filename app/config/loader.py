@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from app.config.schema import AppConfig, ModelsConfig, PipelineConfig
+from app.config.schema import AppConfig, PipelineConfig
 
 
 class ConfigError(Exception):
@@ -28,25 +28,20 @@ def _load_yaml(path: Path) -> dict:
 
 
 def load_app_config(config_dir: Path) -> AppConfig:
-    path = config_dir / "app.yaml"
+    path = config_dir / "config.yml"
     try:
         data = _load_yaml(path)
         return AppConfig(**data)
     except ConfigError:
+        try:
+            path_v1 = config_dir / "app.yaml"
+            data_v1 = _load_yaml(path_v1)
+            return AppConfig(**data_v1)
+        except (ConfigError, ValidationError):
+            pass
         raise
     except ValidationError as e:
         raise ConfigError(f"Invalid app config in {path}: {e}")
-
-
-def load_models_config(config_dir: Path) -> ModelsConfig:
-    path = config_dir / "models.yaml"
-    try:
-        data = _load_yaml(path)
-        return ModelsConfig(**data)
-    except ConfigError:
-        raise
-    except ValidationError as e:
-        raise ConfigError(f"Invalid models config in {path}: {e}")
 
 
 def load_presets(config_dir: Path) -> dict[str, PipelineConfig]:
@@ -75,15 +70,14 @@ def load_presets(config_dir: Path) -> dict[str, PipelineConfig]:
 
 def load_all_configs(
     config_dir: Path,
-) -> tuple[AppConfig, ModelsConfig, dict[str, PipelineConfig]]:
+) -> tuple[AppConfig, dict[str, PipelineConfig]]:
     app_config = load_app_config(config_dir)
-    models_config = load_models_config(config_dir)
     presets = load_presets(config_dir)
 
     if app_config.default_preset not in presets:
         raise ConfigError(
-            f"app.yaml references default_preset '{app_config.default_preset}' "
-            f"but no matching preset found. Available presets: {list(presets.keys())}"
+            f"default_preset '{app_config.default_preset}' not found. "
+            f"Available presets: {list(presets.keys())}"
         )
 
     for preset_name, preset in presets.items():
@@ -91,24 +85,24 @@ def load_all_configs(
             for task in block.tasks:
                 model_field = task.model
                 if "/" not in model_field:
-                    if model_field not in models_config.model_groups:
+                    if model_field not in app_config.model_groups:
                         raise ConfigError(
                             f"Preset '{preset_name}': task '{block.tag}.{task.tag}' references "
-                            f"model_group '{model_field}' which does not exist in models.yaml"
+                            f"model_group '{model_field}' which does not exist in config"
                         )
-                    for entry in models_config.model_groups[model_field]:
+                    for entry in app_config.model_groups[model_field]:
                         provider_id = entry.split("/")[0]
-                        if provider_id not in models_config.providers:
+                        if provider_id not in app_config.providers:
                             raise ConfigError(
                                 f"Preset '{preset_name}': model_group '{model_field}' entry '{entry}' "
-                                f"references provider '{provider_id}' which does not exist in models.yaml"
+                                f"references provider '{provider_id}' which does not exist in config"
                             )
                 else:
                     provider_id = model_field.split("/")[0]
-                    if provider_id not in models_config.providers:
+                    if provider_id not in app_config.providers:
                         raise ConfigError(
                             f"Preset '{preset_name}': task '{block.tag}.{task.tag}' references "
-                            f"provider '{provider_id}' which does not exist in models.yaml"
+                            f"provider '{provider_id}' which does not exist in config"
                         )
 
-    return app_config, models_config, presets
+    return app_config, presets

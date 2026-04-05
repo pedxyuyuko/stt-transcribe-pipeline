@@ -3,23 +3,47 @@ from pydantic import ValidationError
 from pathlib import Path
 import tempfile
 
-from app.config.schema import AppConfig, ModelsConfig, PipelineConfig, ProviderConfig
-from app.config.loader import load_all_configs, ConfigError
+from app.config.schema import AppConfig, PipelineConfig, ProviderConfig
+from app.config.loader import load_all_configs, ConfigError, load_app_config
 
 
 class TestAppConfig:
     def test_valid_app_config(self):
-        cfg = AppConfig(default_preset="default")
+        cfg = AppConfig(
+            host="127.0.0.1",
+            port=9000,
+            api_key="sk-test123",
+            default_preset="default",
+        )
         assert cfg.default_preset == "default"
+        assert cfg.api_key == "sk-test123"
 
     def test_missing_default_preset(self):
         with pytest.raises(ValidationError):
-            AppConfig()
+            AppConfig(api_key="sk-test", host="0.0.0.0", port=8000)
 
+    def test_invalid_api_key_format(self):
+        with pytest.raises(ValidationError, match="[Ss][Kk]"):
+            AppConfig(
+                api_key="invalid-key",
+                host="0.0.0.0",
+                port=8000,
+                default_preset="default",
+            )
 
-class TestModelsConfig:
-    def test_valid_models_config(self):
-        cfg = ModelsConfig(
+    def test_valid_api_key_format(self):
+        cfg = AppConfig(
+            api_key="sk-abc_123-xyz",
+            host="0.0.0.0",
+            port=8000,
+            default_preset="default",
+        )
+        assert cfg.api_key == "sk-abc_123-xyz"
+
+    def test_valid_models_inline(self):
+        cfg = AppConfig(
+            api_key="sk-test",
+            default_preset="default",
             providers={"openai": {"base_url": "http://x", "api_key": "k"}},
             model_groups={"smart": ["openai/gpt-4o"]},
         )
@@ -28,7 +52,12 @@ class TestModelsConfig:
 
     def test_invalid_model_group_entry_no_slash(self):
         with pytest.raises(ValidationError, match="invalid"):
-            ModelsConfig(providers={}, model_groups={"bad": ["invalid-model"]})
+            AppConfig(
+                api_key="sk-test",
+                default_preset="default",
+                providers={},
+                model_groups={"bad": ["invalid-model"]},
+            )
 
     def test_valid_provider_config(self):
         p = ProviderConfig(base_url="http://localhost:8000/v1", api_key="none")
@@ -129,7 +158,6 @@ class TestPipelineConfig:
             )
 
     def test_valid_variable_reference_same_block_not_allowed(self):
-        # Task in block 2 references task in block 1 — this is VALID
         cfg = PipelineConfig(
             output="{correct.final.result}",
             blocks=[
@@ -160,13 +188,36 @@ class TestPipelineConfig:
         assert cfg.output == "{correct.final.result}"
 
 
+def _full_config(
+    host: str = "0.0.0.0",
+    port: int = 8000,
+    api_key: str = "sk-test",
+    default_preset: str = "test",
+    providers: str = "  openai:\n    base_url: http://x\n    api_key: k\n  local-qwen:\n    base_url: http://localhost:8000/v1\n    api_key: none",
+    model_groups: str = "  smart:\n    - openai/gpt-4o",
+    extra: str = "",
+) -> str:
+    return (
+        f"host: {host}\n"
+        f"port: {port}\n"
+        f"api_key: {api_key}\n"
+        f"default_preset: {default_preset}\n"
+        f"providers:\n{providers}\n"
+        f"model_groups:\n{model_groups}\n"
+        f"{extra}"
+    )
+
+
 class TestLoadAllConfigs:
     def test_load_valid_configs(self):
-        app_cfg, models_cfg, presets = load_all_configs(Path("config"))
+        (Path("config") / "config.yml").write_text(
+            _full_config(default_preset="default")
+        )
+        app_cfg, presets = load_all_configs(Path("config"))
         assert app_cfg.default_preset == "default"
         assert "default" in presets
-        assert "local-qwen" in models_cfg.providers
-        assert "smart" in models_cfg.model_groups
+        assert "local-qwen" in app_cfg.providers
+        assert "smart" in app_cfg.model_groups
 
     def test_nonexistent_directory(self):
         with pytest.raises(ConfigError):
@@ -175,8 +226,7 @@ class TestLoadAllConfigs:
     def test_missing_preset_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
-            (tmppath / "app.yaml").write_text("default_preset: test")
-            (tmppath / "models.yaml").write_text("providers: {}\nmodel_groups: {}")
+            (tmppath / "config.yml").write_text(_full_config(default_preset="test"))
             with pytest.raises(
                 ConfigError, match="[Pp]resets|[Dd]irectory|[Nn]ot found"
             ):
@@ -185,14 +235,12 @@ class TestLoadAllConfigs:
     def test_default_preset_not_found(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
-            (tmppath / "app.yaml").write_text("default_preset: nonexistent")
-            (tmppath / "models.yaml").write_text("providers: {}\nmodel_groups: {}")
+            (tmppath / "config.yml").write_text(
+                _full_config(default_preset="nonexistent")
+            )
             (tmppath / "presets").mkdir()
             (tmppath / "presets" / "other.yaml").write_text(
                 'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: smart'
-            )
-            (tmppath / "models.yaml").write_text(
-                "providers:\n  openai:\n    base_url: http://x\n    api_key: k\nmodel_groups:\n  smart:\n    - openai/gpt4"
             )
             with pytest.raises(ConfigError, match="default_preset|[Pp]reset"):
                 load_all_configs(tmppath)
@@ -200,8 +248,7 @@ class TestLoadAllConfigs:
     def test_model_group_not_found(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
-            (tmppath / "app.yaml").write_text("default_preset: test")
-            (tmppath / "models.yaml").write_text("providers: {}\nmodel_groups: {}")
+            (tmppath / "config.yml").write_text(_full_config())
             (tmppath / "presets").mkdir()
             (tmppath / "presets" / "test.yaml").write_text(
                 'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: nonexistent_group'
@@ -212,9 +259,10 @@ class TestLoadAllConfigs:
     def test_provider_not_found(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
-            (tmppath / "app.yaml").write_text("default_preset: test")
-            (tmppath / "models.yaml").write_text(
-                "providers:\n  other:\n    base_url: http://x\n    api_key: k\nmodel_groups: {}"
+            (tmppath / "config.yml").write_text(
+                _full_config(
+                    providers="  other:\n    base_url: http://x\n    api_key: k"
+                )
             )
             (tmppath / "presets").mkdir()
             (tmppath / "presets" / "test.yaml").write_text(

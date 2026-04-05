@@ -47,7 +47,7 @@ async def _handle_transcription(
     try:
         results = await run_pipeline(
             preset=preset,
-            models_config=request.app.state.models_config,
+            models_config=request.app.state.app_config,
             client=request.app.state.http_client,
             audio_bytes=audio_bytes,
         )

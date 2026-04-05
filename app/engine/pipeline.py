@@ -6,7 +6,7 @@ import asyncio
 
 import httpx
 
-from app.config.schema import PipelineConfig, ModelsConfig, TaskConfig
+from app.config.schema import PipelineConfig, AppConfig, TaskConfig
 from app.engine.resolver import resolve_variables, ResultStore
 from app.services.providers import ProviderClient, resolve_model, call_with_fallback
 from app.services.stt import execute_stt_task
@@ -31,7 +31,7 @@ class PipelineError(Exception):
 
 async def run_pipeline(
     preset: PipelineConfig,
-    models_config: ModelsConfig,
+    models_config: AppConfig,
     client: httpx.AsyncClient,
     audio_bytes: bytes,
 ) -> ResultStore:

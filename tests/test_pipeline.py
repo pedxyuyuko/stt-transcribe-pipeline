@@ -2,7 +2,7 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from app.config.schema import PipelineConfig, ModelsConfig, ProviderConfig
+from app.config.schema import PipelineConfig, AppConfig, ProviderConfig
 from app.engine.pipeline import run_pipeline, get_pipeline_output, PipelineError
 from app.engine.resolver import VariableNotFoundError
 from app.services.providers import AllModelsFailedError, resolve_model
@@ -61,8 +61,12 @@ def two_block_pipeline_config():
 
 
 @pytest.fixture
-def models_config():
-    return ModelsConfig(
+def app_config():
+    return AppConfig(
+        host="0.0.0.0",
+        port=8000,
+        api_key="sk-test",
+        default_preset="default",
         providers={
             "openai": {"base_url": "http://localhost:8080/v1", "api_key": "test"}
         },
@@ -71,8 +75,12 @@ def models_config():
 
 
 @pytest.fixture
-def models_config_with_group():
-    return ModelsConfig(
+def app_config_with_group():
+    return AppConfig(
+        host="0.0.0.0",
+        port=8000,
+        api_key="sk-test",
+        default_preset="default",
         providers={
             "openai": {"base_url": "http://localhost:8080/v1", "api_key": "test"},
             "backup": {"base_url": "http://localhost:8081/v1", "api_key": "test"},
@@ -82,9 +90,7 @@ def models_config_with_group():
 
 
 @pytest.mark.asyncio
-async def test_single_block_single_task(
-    simple_pipeline_config, models_config, httpx_mock
-):
+async def test_single_block_single_task(simple_pipeline_config, app_config, httpx_mock):
     import httpx
 
     httpx_mock.add_response(
@@ -96,7 +102,7 @@ async def test_single_block_single_task(
     async with httpx.AsyncClient() as client:
         results = await run_pipeline(
             preset=simple_pipeline_config,
-            models_config=models_config,
+            models_config=app_config,
             client=client,
             audio_bytes=b"fake audio",
         )
@@ -106,7 +112,7 @@ async def test_single_block_single_task(
 
 @pytest.mark.asyncio
 async def test_two_blocks_variable_passing(
-    two_block_pipeline_config, models_config_with_group, httpx_mock
+    two_block_pipeline_config, app_config_with_group, httpx_mock
 ):
     import httpx
 
@@ -124,7 +130,7 @@ async def test_two_blocks_variable_passing(
     async with httpx.AsyncClient() as client:
         results = await run_pipeline(
             preset=two_block_pipeline_config,
-            models_config=models_config_with_group,
+            models_config=app_config_with_group,
             client=client,
             audio_bytes=b"fake audio",
         )
@@ -145,7 +151,7 @@ def test_get_pipeline_output_missing_variable():
 
 
 @pytest.mark.asyncio
-async def test_all_models_failed(models_config, httpx_mock):
+async def test_all_models_failed(app_config, httpx_mock):
     import httpx
     from app.config.schema import PipelineConfig
 
@@ -176,7 +182,7 @@ async def test_all_models_failed(models_config, httpx_mock):
         async with httpx.AsyncClient() as client:
             await run_pipeline(
                 preset=pipeline,
-                models_config=models_config,
+                models_config=app_config,
                 client=client,
                 audio_bytes=b"fake audio",
             )

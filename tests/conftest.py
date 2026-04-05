@@ -17,9 +17,13 @@ async def client():
 
 @pytest.fixture
 def sample_models_config():
-    from app.config.schema import ModelsConfig
+    from app.config.schema import AppConfig
 
-    return ModelsConfig(
+    return AppConfig(
+        host="0.0.0.0",
+        port=8000,
+        api_key="sk-test",
+        default_preset="default",
         providers={
             "openai": {"base_url": "http://localhost:8080/v1", "api_key": "test"},
             "local": {"base_url": "http://localhost:8000/v1", "api_key": "none"},

@@ -6,6 +6,34 @@ from pydantic import BaseModel, field_validator, model_validator
 from typing import Literal, Dict, List
 
 
+class AppConfig(BaseModel):
+    host: str = "0.0.0.0"
+    port: int = 8000
+    api_key: str
+    default_preset: str
+    providers: Dict[str, ProviderConfig] = {}
+    model_groups: Dict[str, List[str]] = {}
+
+    @field_validator("api_key")
+    @classmethod
+    def api_key_valid(cls, v: str) -> str:
+        if not re.match(r"^sk-[a-zA-Z0-9_-]+$", v):
+            raise ValueError("api_key must match OpenAI sk- format (e.g. sk-xyz123).")
+        return v
+
+    @field_validator("model_groups")
+    @classmethod
+    def model_group_entries_valid(cls, v: Dict[str, List[str]]) -> Dict[str, List[str]]:
+        for group_name, entries in v.items():
+            for entry in entries:
+                if "/" not in entry:
+                    raise ValueError(
+                        f"Model group '{group_name}' entry '{entry}' is invalid. "
+                        f"Must match 'provider_id/model_id' format (contains '/')."
+                    )
+        return v
+
+
 class TaskConfig(BaseModel):
     tag: str
     type: Literal["chat", "transcriptions"]
@@ -68,24 +96,3 @@ class PipelineConfig(BaseModel):
 class ProviderConfig(BaseModel):
     base_url: str
     api_key: str
-
-
-class ModelsConfig(BaseModel):
-    providers: Dict[str, ProviderConfig]
-    model_groups: Dict[str, List[str]]
-
-    @field_validator("model_groups")
-    @classmethod
-    def model_group_entries_valid(cls, v: Dict[str, List[str]]) -> Dict[str, List[str]]:
-        for group_name, entries in v.items():
-            for entry in entries:
-                if "/" not in entry:
-                    raise ValueError(
-                        f"Model group '{group_name}' entry '{entry}' is invalid. "
-                        f"Must match 'provider_id/model_id' format (contains '/')."
-                    )
-        return v
-
-
-class AppConfig(BaseModel):
-    default_preset: str
