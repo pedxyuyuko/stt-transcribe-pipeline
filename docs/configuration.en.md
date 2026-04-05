@@ -176,6 +176,7 @@ A task is an individual API call within a block.
 | `prompt` | string | `null` | No | Prompt text. For `"transcriptions"` tasks, sent as the `prompt` form field. For `"chat"` tasks, used as the text content of the user message. Supports variable substitution. |
 | `max_retries` | int | `0` | No | Number of retry attempts after the entire fallback chain fails. Each retry re-attempts the full chain. |
 | `timeout` | float | `null` | No | Maximum time (in seconds) for a single HTTP request before it times out. A timed-out model attempt is retried within the fallback chain (next model is tried), and the entire chain is re-attempted up to `max_retries` times. Passes `timeout` directly to the `httpx` request. |
+| `model_params` | dict | `null` | No | Arbitrary key-value parameters passed directly to the model API. For `"chat"` tasks, these are merged into the JSON request body (e.g. `temperature`, `top_p`, `max_tokens`, `thinking`). For `"transcriptions"` tasks, these are added as extra form fields. |
 
 **Task types explained:**
 
@@ -240,6 +241,8 @@ blocks:
           Raw transcription:
           {stt.raw.result}
         max_retries: 2
+        model_params:
+          temperature: 0.3
 ```
 
 In this example:

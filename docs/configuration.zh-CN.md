@@ -176,6 +176,7 @@ log_level: "INFO"
 | `prompt` | 字符串 | `null` | 否 | 提示文本。对 `"transcriptions"` 任务，作为 `prompt` 表单字段发送。对 `"chat"` 任务，用作用户消息的文本内容。支持变量替换。 |
 | `max_retries` | 整型 | `0` | 否 | 在整个回退链全部失败后的重试次数。每次重试重新尝试完整链路。 |
 | `timeout` | 浮点数 | `null` | 否 | 单次 HTTP 请求的超时时间（秒）。超时的 model 尝试会在回退链内重试（尝试链中下一个 model），并且整条链路最多重试 `max_retries` 次。该值直接传给 `httpx` 请求。 |
+| `model_params` | 字典 | `null` | 否 | 直接传递给模型 API 的任意键值参数。对 `"chat"` 任务，这些参数会合并到 JSON 请求体中（如 `temperature`、`top_p`、`max_tokens`、`thinking`）。对 `"transcriptions"` 任务，这些参数会作为额外的表单字段发送。 |
 
 **任务类型说明：**
 
@@ -240,6 +241,8 @@ blocks:
           Raw transcription:
           {stt.raw.result}
         max_retries: 2
+        model_params:
+          temperature: 0.3
 ```
 
 在这个示例中：

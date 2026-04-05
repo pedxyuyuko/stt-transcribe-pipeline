@@ -22,6 +22,7 @@ The input and output formats follow the OpenAI API conventions, making this a dr
 - Multi-provider support -- configure any number of OpenAI-compatible STT and LLM providers (local or cloud)
 - Variable substitution -- pass results between blocks using {block_tag.task_tag.result} syntax
 - Preset system -- switch between different pipeline configurations via the `model` request field
+- Per-task model parameters -- pass arbitrary parameters like `temperature`, `top_p`, or `thinking` to individual tasks via `model_params`
 - Docker support -- multi-stage build with pre-built images on Docker Hub
 - Bearer token auth -- API protected by Bearer token; bypass with SKIP_AUTH=1 for local development
 
