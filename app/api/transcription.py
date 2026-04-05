@@ -52,15 +52,17 @@ async def _handle_transcription(
     set_context(preset_name=preset_name)
 
     audio_bytes = await file.read()
+    audio_filename = file.filename or "audio.wav"
 
     # --- log request metadata (info level) ---
     client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
     if not client_ip:
         client_ip = request.client.host if request.client else "unknown"
     logger.info(
-        "Transcription request received | ip={} | audio_size={} bytes",
+        "Transcription request received | ip={} | audio_size={} bytes | filename={}",
         client_ip,
         len(audio_bytes),
+        audio_filename,
     )
 
     if len(audio_bytes) > MAX_AUDIO_SIZE:
@@ -79,6 +81,7 @@ async def _handle_transcription(
             models_config=request.app.state.app_config,
             client=request.app.state.http_client,
             audio_bytes=audio_bytes,
+            audio_filename=audio_filename,
         )
     except PipelineError as e:
         logger.error(

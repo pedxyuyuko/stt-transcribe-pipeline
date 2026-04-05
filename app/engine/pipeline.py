@@ -106,6 +106,7 @@ async def run_pipeline(
     models_config: AppConfig,
     client: httpx.AsyncClient,
     audio_bytes: bytes,
+    audio_filename: str = "audio.wav",
 ) -> ResultStore:
     results: ResultStore = {}
     last_checkpoint_value: str | None = None
@@ -143,6 +144,7 @@ async def run_pipeline(
                         audio_bytes=audio_bytes,
                         client=client,
                         model_name=mn,
+                        filename=audio_filename,
                     )
 
                 coros.append(

@@ -82,6 +82,11 @@ class ProviderClient:
                 for k, v in data.items()
             },
         )
+        logger.info(
+            "STT request | provider={} | model={}",
+            self._provider_id or self._base_url,
+            model
+        )
 
         headers = {"Authorization": f"Bearer {self._api_key}", **self._headers}
         response = await client.post(
