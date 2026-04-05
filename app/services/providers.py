@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Callable, Coroutine, List, Tuple
 
 import httpx
+from loguru import logger
 
 
 class AllModelsFailedError(Exception):
@@ -62,7 +63,18 @@ class ProviderClient:
             headers={"Authorization": f"Bearer {self._api_key}"},
         )
         response.raise_for_status()
-        return response.json()["text"]
+        data = response.json()
+
+        # Safe extraction of metadata (different providers may have different formats)
+        logger.debug(
+            "STT API response | provider={} | model={} | language={} | duration={}",
+            self._base_url,
+            data.get("model", "unknown"),
+            data.get("language", "unknown"),
+            data.get("duration", "unknown"),
+        )
+
+        return data["text"]
 
     async def post_chat(
         self,
@@ -82,7 +94,20 @@ class ProviderClient:
             },
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        data = response.json()
+
+        # Safe extraction of usage metadata
+        usage = data.get("usage", {})
+        logger.debug(
+            "Chat API response | provider={} | model={} | prompt_tokens={} | completion_tokens={} | total_tokens={}",
+            self._base_url,
+            data.get("model", "unknown"),
+            usage.get("prompt_tokens", "N/A"),
+            usage.get("completion_tokens", "N/A"),
+            usage.get("total_tokens", "N/A"),
+        )
+
+        return data["choices"][0]["message"]["content"]
 
 
 def resolve_model(model_field: str, app_config) -> List[Tuple[ProviderClient, str]]:
@@ -160,15 +185,23 @@ async def call_with_fallback(
     errors: List[Tuple[str, Exception]] = []
 
     for provider_client, model_name in models:
+        logger.debug("Trying model: {}/{}", provider_client.base_url, model_name)
         try:
             # call_fn is awaited with provider, httpx_client, model_name
             result = await call_fn(provider_client, model_name)
             return result
         except (httpx.HTTPStatusError, httpx.ConnectError) as e:
             errors.append((f"{provider_client.base_url}/{model_name}", e))
+            logger.debug(
+                "Model {}/{} failed, will try next: {}",
+                provider_client.base_url,
+                model_name,
+                e,
+            )
             continue
         except Exception:
             # Non-retryable errors — re-raise immediately
             raise
 
+    logger.error("All models exhausted | tried={}", len(errors))
     raise AllModelsFailedError(errors)
