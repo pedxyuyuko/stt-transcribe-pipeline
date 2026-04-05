@@ -36,9 +36,9 @@ The input and output formats follow the OpenAI API conventions, making this a dr
 mkdir -p stt-transcribe-pipeline/config/presets && cd stt-transcribe-pipeline
 
 # Download docker-compose.yml and example config
-curl -fsSLO https://raw.githubusercontent.com/uuz233/stt-transcribe-pipeline/master/docker-compose.yml
-curl -fsSL https://raw.githubusercontent.com/uuz233/stt-transcribe-pipeline/master/config/config.example.yml -o config/config.yml
-curl -fsSL https://raw.githubusercontent.com/uuz233/stt-transcribe-pipeline/master/config/presets/default.yaml.example -o config/presets/default.yaml
+curl -fsSLO https://raw.githubusercontent.com/pedxyuyuko/stt-transcribe-pipeline/master/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/pedxyuyuko/stt-transcribe-pipeline/master/config/config.example.yml -o config/config.yml
+curl -fsSL https://raw.githubusercontent.com/pedxyuyuko/stt-transcribe-pipeline/master/config/presets/default.yaml.example -o config/presets/default.yaml
 ```
 
 2. Edit `config/config.yml` with your providers and API keys. The default pipeline preset is ready to use out of the box. See the [Configuration Guide](docs/configuration.en.md) for customization options.
@@ -57,7 +57,7 @@ Requires Python 3.10 or higher.
 
 ```bash
 # Clone the repository
-git clone https://github.com/uuz233/stt-transcribe-pipeline.git
+git clone https://github.com/pedxyuyuko/stt-transcribe-pipeline.git
 cd stt-transcribe-pipeline
 
 # Create config files
