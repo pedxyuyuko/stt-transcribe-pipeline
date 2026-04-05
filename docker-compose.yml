@@ -1,0 +1,12 @@
+services:
+  stt-pipeline:
+    image: uuz233/stt-transcribe-pipeline:edge
+    pull_policy: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config/config.yml:/app/config/config.yml:ro
+      - ./config/presets:/app/config/presets:ro
+    environment:
+      - SKIP_AUTH=${SKIP_AUTH:-}
+    restart: unless-stopped
