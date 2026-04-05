@@ -182,7 +182,7 @@ A task is an individual API call within a block.
 | `need_audio` | bool | `false` | No | Whether to include audio data in the request. Only meaningful for `"chat"` type -- sends the audio as a base64-encoded WAV in an `input_audio` content block. Ignored for `"transcriptions"` type (always sends audio). |
 | `prompt` | string | `null` | No | Prompt text. For `"transcriptions"` tasks, sent as the `prompt` form field. For `"chat"` tasks, used as the text content of the user message. Supports variable substitution. |
 | `max_retries` | int | `0` | No | Number of retry attempts after the entire fallback chain fails. Each retry re-attempts the full chain. |
-| `timeout` | float | `null` | No | Maximum time (in seconds) for a single attempt of the task before it is marked as failed. A timed-out task is treated as an immediate failure and will **not** be retried. If a checkpoint is available, the fallback value is returned instead. |
+| `timeout` | float | `null` | No | Maximum time (in seconds) for a single HTTP request before it times out. A timed-out model attempt is retried within the fallback chain (next model is tried), and the entire chain is re-attempted up to `max_retries` times. Passes `timeout` directly to the `httpx` request. |
 
 **Task types explained:**
 
@@ -277,24 +277,21 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
   │    │    │
   │    │    ├── resolve_variables(prompt, results)  [chat only]
   │    │    │
-│    │    └── _call_task_with_retries(max_retries, timeout, models, call_fn)
-│    │         │
-│    │         ├── if timeout is set: await with asyncio.wait_for(timeout)
-│    │         ├── On asyncio.TimeoutError: mark task as failed (no retry)
+│    │    └── _call_task_with_retries(max_retries, models, call_fn)
 │    │         │
 │    │         ├── call_with_fallback(models, call_fn)
-  │    │         │    │
-  │    │         │    ├── for each (client, model) in models:
-  │    │         │    │    ├── await call_fn(client, model)
-  │    │         │    │    │   └── execute_stt_task() OR execute_chat_task()
-  │    │         │    │    ├── On HTTPStatusError/ConnectError: try next
-  │    │         │    │    └── On other exception: re-raise immediately
-  │    │         │    │
-  │    │         │    └── All failed: raise AllModelsFailedError
-  │    │         │
-  │    │         └── On AllModelsFailedError/ConnectError:
-  │    │              ├── attempt < max_retries: retry full chain
-  │    │              └── attempt > max_retries: re-raise
+│    │         │    │
+│    │         │    ├── for each (client, model) in models:
+│    │         │    │    ├── await call_fn(client, model)  -- each POST has per-task timeout via httpx
+│    │         │    │    │   └── execute_stt_task() OR execute_chat_task()
+│    │         │    │    ├── On HTTPStatusError/ConnectError/TimeoutException: try next
+│    │         │    │    └── On other exception: re-raise immediately
+│    │         │    │
+│    │         │    └── All failed: raise AllModelsFailedError
+│    │         │
+│    │         └── On AllModelsFailedError/ConnectError:
+│    │              ├── attempt < max_retries: retry full chain
+│    │              └── attempt > max_retries: re-raise
   │    │
   │    ├── If any task raised an exception:
   │    │    ├── last_checkpoint_value exists: raise PipelineFallback
@@ -311,9 +308,9 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
 - **Blocks are sequential.** Each block must finish before the next begins.
 - **Tasks within a block are parallel.** All tasks are gathered with `asyncio.gather(return_exceptions=True)`. If any task raised an exception, a `PipelineError` is raised.
 - **Retry logic retries the entire fallback chain**, not individual models. `max_retries: 2` means the full chain is tried up to 3 times total (1 initial + 2 retries).
-- **Timeout applies to each individual attempt.** If a task has `timeout: 30` and `max_retries: 2`, each of the 3 attempts has a 30-second deadline. If any single attempt exceeds the timeout, that attempt fails immediately (and is **not** retried since timeout is not a retryable error).
-- **Retryable errors:** `AllModelsFailedError`, `httpx.ConnectError`.
-- **Non-retryable errors** (anything other than the above two, including `asyncio.TimeoutError`) are re-raised immediately with no retry.
+- **Timeout applies per model attempt.** Each `httpx` POST call passes the per-task timeout. A timed-out model attempt is caught like any other `HTTPStatusError` and the next model in the chain is tried. The overall `_call_task_with_retries` layer catches `httpx.TimeoutException` too.
+- **Retryable errors:** `AllModelsFailedError`, `httpx.ConnectError`, `httpx.TimeoutException`.
+- **Non-retryable errors** (anything other than the above three) are re-raised immediately with no retry.
 - **Checkpoint fallback** only triggers when a later block fails and a previous block's checkpoint was saved. If the failing block itself has a checkpoint, that checkpoint is not yet available (it is saved after the block completes successfully).
 
 ---
