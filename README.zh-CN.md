@@ -84,14 +84,16 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 ### 指定预设
 
-通过 URL 路径指定要使用的预设名称：
+通过 `model` 字段指定要使用的预设名称（对应 `config/presets/` 下的文件名，不含 `.yaml` 扩展名）：
 
 ```bash
-curl -X POST http://localhost:8000/my-preset/v1/audio/transcriptions \
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -H "Authorization: Bearer sk-your-api-key-here" \
   -F "file=@recording.wav" \
-  -F "model=openai/whisper-1"
+  -F "model=my-preset"
 ```
+
+如果 `model` 为空或不匹配任何预设，则回退到 `default_preset`。
 
 ### 健康检查
 
@@ -209,7 +211,7 @@ pytest tests/test_pipeline.py -v
 
 ### Preset 开发
 
-在 `config/presets/` 目录下创建新的 YAML 文件，每个文件对应一个独立的 Preset。通过 `/{preset_name}/v1/audio/transcriptions` 端点调用。
+在 `config/presets/` 目录下创建新的 YAML 文件，每个文件对应一个独立的 Preset。客户端通过请求的 `model` 字段指定预设文件名来选择对应的 Preset。
 
 ## 许可证
 

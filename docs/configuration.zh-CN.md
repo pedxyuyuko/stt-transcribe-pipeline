@@ -125,14 +125,7 @@ log_level: "INFO"
 
 `config/presets/` 中的每个 `.yaml` 文件定义一个流水线预设。文件名（不含 `.yaml` 扩展名）即为预设名称。
 
-预设被加载到 `PipelineConfig` Pydantic 模型中（`app/config/schema.py:81`）。预设的使用方式如下：
-
-| 端点 | 使用的预设 |
-|---|---|
-| `POST /v1/audio/transcriptions` | 应用配置中的 `default_preset` |
-| `POST /{preset_name}/v1/audio/transcriptions` | 命名的预设（必须存在于 `config/presets/` 中） |
-
-如果指定的预设不存在，端点返回 404 及 OpenAI 风格的错误响应。
+预设的选用由请求的 `model` 字段决定。如果 `model` 的值与 `config/presets/` 目录下某个预设文件名（不含 `.yaml` 扩展名）匹配，则使用该预设；如果 `model` 为空或无法匹配任何预设，则回退到应用配置中的 `default_preset`。当 `model` 非空但不匹配任何预设时，服务器会记录一条警告日志。
 
 ### 3.1 PipelineConfig（顶层配置）
 
@@ -319,23 +312,13 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
 
 ### 5.1 POST `/v1/audio/transcriptions`
 
-使用 `config/config.yml` 中定义的 `default_preset` 运行流水线。
+转录端点的唯一入口。预设的选择由请求的 `model` 字段决定：
 
-### 5.2 POST `/{preset_name}/v1/audio/transcriptions`
+- 如果 `model` 为空或未提供，使用应用配置中的 `default_preset`。
+- 如果 `model` 与 `config/presets/` 中某个预设文件名（不含 `.yaml` 扩展名）匹配，则使用该预设。
+- 如果 `model` 非空但不匹配任何预设，记录警告日志后回退到 `default_preset`。
 
-使用命名的预设运行流水线。如果预设不存在，返回 404：
-
-```json
-{
-  "error": {
-    "message": "Preset 'xyz' not found.",
-    "type": "invalid_request_error",
-    "code": "preset_not_found"
-  }
-}
-```
-
-### 5.3 GET `/health`
+### 5.2 GET `/health`
 
 返回最小化的健康检查响应：
 
@@ -345,14 +328,14 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
 }
 ```
 
-### 5.4 请求参数（转录端点）
+### 5.3 请求参数（POST `/v1/audio/transcriptions`）
 
-两个 POST 转录端点都接受 `multipart/form-data`，包含以下字段：
+转录端点接受 `multipart/form-data`，包含以下字段：
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `file` | UploadFile | -- | 要转录的音频文件。必填。最大 25 MB（26214400 字节）。 |
-| `model` | 字符串 | `""` | 为兼容 OpenAI API 而接受。实际未使用。调用哪些模型由流水线配置决定。 |
+| `model` | 字符串 | `""` | 决定使用哪个流水线预设。空字符串或未提供时使用 `default_preset`。匹配 `config/presets/` 中某个预设文件名（不含 `.yaml`）时，使用对应预设。非空但不匹配时记录警告并回退到 `default_preset`。 |
 | `language` | 字符串 | `null` | 为兼容 OpenAI API 而接受。实际未使用。 |
 | `prompt` | 字符串 | `null` | 为兼容 OpenAI API 而接受。在 API 层面未使用。流水线级别的 prompt 在预设 YAML 中定义。 |
 | `response_format` | 字符串 | `"json"` | 控制响应格式。有效值：`"json"`、`"text"`、`"verbose_json"`。 |
@@ -370,7 +353,7 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
 }
 ```
 
-### 5.5 响应格式
+### 5.4 响应格式
 
 **`"json"`（默认）：**
 ```json
@@ -401,7 +384,7 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
 }
 ```
 
-### 5.6 鉴权
+### 5.5 鉴权
 
 除 `/health`、`/healthz`、`/docs`、`/openapi.json` 和 `/redoc` 外的所有端点都需要通过 Bearer 令牌鉴权：
 

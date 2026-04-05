@@ -145,7 +145,7 @@ async def _handle_transcription(
 
 
 @router.post("/v1/audio/transcriptions")
-async def transcribe_default(
+async def transcribe(
     request: Request,
     file: UploadFile,
     model: str = Form(default=""),
@@ -156,45 +156,17 @@ async def transcribe_default(
 ):
     presets: dict[str, PipelineConfig] = request.app.state.presets
     default_preset_name = request.app.state.app_config.default_preset
-    preset = presets[default_preset_name]
 
-    return await _handle_transcription(
-        request=request,
-        preset=preset,
-        preset_name=default_preset_name,
-        file=file,
-        model=model,
-        language=language,
-        prompt=prompt,
-        response_format=response_format,
-        temperature=temperature,
-    )
-
-
-@router.post("/{preset_name}/v1/audio/transcriptions")
-async def transcribe_preset(
-    request: Request,
-    preset_name: str,
-    file: UploadFile,
-    model: str = Form(default=""),
-    language: str | None = Form(default=None),
-    prompt: str | None = Form(default=None),
-    response_format: str = Form(default="json"),
-    temperature: float | None = Form(default=None),
-):
-    presets: dict[str, PipelineConfig] = request.app.state.presets
-
-    if preset_name not in presets:
-        return JSONResponse(
-            status_code=404,
-            content={
-                "error": {
-                    "message": f"Preset '{preset_name}' not found.",
-                    "type": "invalid_request_error",
-                    "code": "preset_not_found",
-                }
-            },
-        )
+    if model and model in presets:
+        preset_name = model
+    else:
+        preset_name = default_preset_name
+        if model:
+            logger.warning(
+                "Requested model '{}' has no matching preset, falling back to '{}'",
+                model,
+                default_preset_name,
+            )
 
     preset = presets[preset_name]
 

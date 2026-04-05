@@ -125,14 +125,7 @@ The client is stored in `app.state.http_client` and reused across all provider c
 
 Each `.yaml` file in `config/presets/` defines one pipeline preset. The filename (without the `.yaml` extension) becomes the preset name.
 
-Presets are loaded into the `PipelineConfig` Pydantic model (`app/config/schema.py:81`). A preset accessed via:
-
-| Endpoint | Preset used |
-|---|---|
-| `POST /v1/audio/transcriptions` | `default_preset` from app config |
-| `POST /{preset_name}/v1/audio/transcriptions` | Named preset (must exist in `config/presets/`) |
-
-If the named preset does not exist, the endpoint returns a 404 with an OpenAI-style error response.
+Presets are loaded into the `PipelineConfig` Pydantic model (`app/config/schema.py:81`). The `model` form field in the request determines which preset is used. If `model` matches a preset filename (without the `.yaml` extension) in `config/presets/`, that preset runs. If `model` is empty or does not match any preset, `default_preset` from the app config is used instead. A warning is logged when `model` is non-empty but does not match any available preset.
 
 ### 3.1 PipelineConfig (Top-Level)
 
@@ -319,23 +312,9 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
 
 ### 5.1 POST `/v1/audio/transcriptions`
 
-Runs the pipeline using the `default_preset` defined in `config/config.yml`.
+Runs the pipeline using the preset selected by the `model` form field. If `model` matches a preset filename in `config/presets/`, that preset is used. If `model` is empty or does not match any preset, falls back to the `default_preset` defined in `config/config.yml`.
 
-### 5.2 POST `/{preset_name}/v1/audio/transcriptions`
-
-Runs the pipeline using the named preset. If the preset does not exist, returns 404:
-
-```json
-{
-  "error": {
-    "message": "Preset 'xyz' not found.",
-    "type": "invalid_request_error",
-    "code": "preset_not_found"
-  }
-}
-```
-
-### 5.3 GET `/health`
+### 5.2 GET `/health`
 
 Returns a minimal health check:
 
@@ -345,14 +324,14 @@ Returns a minimal health check:
 }
 ```
 
-### 5.4 Request Parameters (Transcription Endpoints)
+### 5.3 Request Parameters
 
 Both POST transcription endpoints accept `multipart/form-data` with the following fields:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `file` | UploadFile | -- | Audio file to transcribe. Required. Maximum 25 MB (26214400 bytes). |
-| `model` | string | `""` | Accepted for OpenAI API compatibility. Not used. The pipeline configuration determines which models are called. |
+| `model` | string | `""` | Selects which pipeline preset to use. If the value matches a preset filename (without `.yaml` extension) in `config/presets/`, that preset runs. If empty or unmatched, falls back to `default_preset`. A warning is logged when non-empty but unmatched. |
 | `language` | string | `null` | Accepted for OpenAI API compatibility. Not used. |
 | `prompt` | string | `null` | Accepted for OpenAI API compatibility. Not used at the API level. Pipeline-level prompts are defined in preset YAML. |
 | `response_format` | string | `"json"` | Controls response format. Valid values: `"json"`, `"text"`, `"verbose_json"`. |
@@ -370,7 +349,7 @@ If the audio file exceeds 25 MB, the server returns HTTP 413:
 }
 ```
 
-### 5.5 Response Formats
+### 5.4 Response Formats
 
 **`"json"` (default):**
 ```json
@@ -401,7 +380,7 @@ If a checkpoint fallback was used, `verbose_json` also includes:
 }
 ```
 
-### 5.6 Authentication
+### 5.5 Authentication
 
 All endpoints except `/health`, `/healthz`, `/docs`, `/openapi.json`, and `/redoc` require authentication via Bearer token:
 

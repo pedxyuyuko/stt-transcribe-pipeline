@@ -21,7 +21,7 @@ The input and output formats follow the OpenAI API conventions, making this a dr
 - OpenAI-compatible API -- accepts multipart form requests and returns OpenAI-style JSON; works with any existing OpenAI audio client
 - Multi-provider support -- configure any number of OpenAI-compatible STT and LLM providers (local or cloud)
 - Variable substitution -- pass results between blocks using {block_tag.task_tag.result} syntax
-- Preset system -- switch between different pipeline configurations by specifying a preset name in the URL path
+- Preset system -- switch between different pipeline configurations via the `model` request field
 - Docker support -- multi-stage build with pre-built images on Docker Hub
 - Bearer token auth -- API protected by Bearer token; bypass with SKIP_AUTH=1 for local development
 
@@ -80,25 +80,18 @@ SKIP_AUTH=1 python main.py
 
 ## Usage
 
-### Transcribe Audio (Default Preset)
+### Transcribe Audio
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -H "Authorization: Bearer sk-your-api-key-here" \
   -F "file=@audio.wav" \
-  -F "model=local-qwen/whisper-large" \
+  -F "model=default" \
   -F "language=en" \
   -F "response_format=json"
 ```
 
-### Transcribe Audio (Named Preset)
-
-```bash
-curl -X POST http://localhost:8000/translate-prompt/v1/audio/transcriptions \
-  -H "Authorization: Bearer sk-your-api-key-here" \
-  -F "file=@audio.wav" \
-  -F "response_format=json"
-```
+The `model` field selects which pipeline preset to use. If `model` matches a preset filename in `config/presets/` (without the `.yaml` extension), that preset runs. If empty or unmatched, the `default_preset` from `config/config.yml` is used.
 
 ### Health Check
 
@@ -122,7 +115,7 @@ The `response_format` parameter controls the shape of the returned response:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `file` | file | required | Audio file (max 25MB) |
-| `model` | string | "" | Accepted for OpenAI API compatibility. Pipeline config determines which models are used. |
+| `model` | string | "" | Selects which pipeline preset to use. Matches preset filenames in `config/presets/`. Empty or unmatched falls back to `default_preset`. |
 | `language` | string | null | Accepted for OpenAI API compatibility. |
 | `prompt` | string | null | Accepted for OpenAI API compatibility. |
 | `response_format` | string | "json" | Output format: json, text, or verbose_json |
