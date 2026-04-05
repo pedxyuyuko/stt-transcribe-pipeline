@@ -8,6 +8,7 @@ import httpx
 
 from app.config.schema import TaskConfig
 from app.services.providers import ProviderClient
+from loguru import logger
 
 
 async def execute_chat_task(
@@ -38,7 +39,14 @@ async def execute_chat_task(
     Raises:
         httpx.HTTPStatusError: On non-2xx response (for fallback to catch)
     """
-    # Build content list: always text, optionally audio
+    logger.debug(
+        "Chat task executing | model={} | has_audio={} | prompt_length={}",
+        model_name,
+        audio_bytes is not None,
+        len(resolved_prompt),
+    )
+    logger.debug("Chat task prompt: {}", resolved_prompt)
+
     content: list[dict] = [{"type": "text", "text": resolved_prompt}]
 
     if audio_bytes is not None:
@@ -50,8 +58,10 @@ async def execute_chat_task(
             }
         )
 
-    return await provider_client.post_chat(
+    result = await provider_client.post_chat(
         client=client,
         messages=[{"role": "user", "content": content}],
         model=model_name,
     )
+    logger.debug("Chat task output: {}", result)
+    return result
