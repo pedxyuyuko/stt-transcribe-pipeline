@@ -1,0 +1,224 @@
+import pytest
+from pydantic import ValidationError
+from pathlib import Path
+import tempfile
+
+from app.config.schema import AppConfig, ModelsConfig, PipelineConfig, ProviderConfig
+from app.config.loader import load_all_configs, ConfigError
+
+
+class TestAppConfig:
+    def test_valid_app_config(self):
+        cfg = AppConfig(default_preset="default")
+        assert cfg.default_preset == "default"
+
+    def test_missing_default_preset(self):
+        with pytest.raises(ValidationError):
+            AppConfig()
+
+
+class TestModelsConfig:
+    def test_valid_models_config(self):
+        cfg = ModelsConfig(
+            providers={"openai": {"base_url": "http://x", "api_key": "k"}},
+            model_groups={"smart": ["openai/gpt-4o"]},
+        )
+        assert "openai" in cfg.providers
+        assert "smart" in cfg.model_groups
+
+    def test_invalid_model_group_entry_no_slash(self):
+        with pytest.raises(ValidationError, match="invalid"):
+            ModelsConfig(providers={}, model_groups={"bad": ["invalid-model"]})
+
+    def test_valid_provider_config(self):
+        p = ProviderConfig(base_url="http://localhost:8000/v1", api_key="none")
+        assert p.base_url == "http://localhost:8000/v1"
+
+
+class TestPipelineConfig:
+    def test_valid_pipeline_config(self):
+        cfg = PipelineConfig(
+            output="{stt.qwen.result}",
+            blocks=[
+                {
+                    "tag": "stt",
+                    "tasks": [
+                        {
+                            "tag": "qwen",
+                            "type": "transcriptions",
+                            "model": "local/qwen3",
+                            "need_audio": True,
+                        }
+                    ],
+                }
+            ],
+        )
+        assert len(cfg.blocks) == 1
+
+    def test_duplicate_block_tags(self):
+        with pytest.raises(ValidationError, match="[Dd]uplicate"):
+            PipelineConfig(
+                output="{a.x.result}",
+                blocks=[
+                    {
+                        "tag": "a",
+                        "tasks": [{"tag": "x", "type": "chat", "model": "smart"}],
+                    },
+                    {
+                        "tag": "a",
+                        "tasks": [{"tag": "y", "type": "chat", "model": "smart"}],
+                    },
+                ],
+            )
+
+    def test_duplicate_task_tags_within_block(self):
+        with pytest.raises(ValidationError, match="[Dd]uplicate"):
+            PipelineConfig(
+                output="{a.x.result}",
+                blocks=[
+                    {
+                        "tag": "a",
+                        "tasks": [
+                            {"tag": "x", "type": "chat", "model": "smart"},
+                            {"tag": "x", "type": "chat", "model": "smart"},
+                        ],
+                    }
+                ],
+            )
+
+    def test_invalid_output_format(self):
+        with pytest.raises(ValidationError, match="[Oo]utput"):
+            PipelineConfig(
+                output="not-a-variable",
+                blocks=[
+                    {
+                        "tag": "a",
+                        "tasks": [{"tag": "x", "type": "chat", "model": "smart"}],
+                    }
+                ],
+            )
+
+    def test_forward_variable_reference(self):
+        with pytest.raises(ValidationError, match="[Uu]ndefined|[Rr]eferences"):
+            PipelineConfig(
+                output="{b.y.result}",
+                blocks=[
+                    {
+                        "tag": "b",
+                        "tasks": [
+                            {
+                                "tag": "y",
+                                "type": "chat",
+                                "model": "smart",
+                                "prompt": "Fix {a.x.result}",
+                            }
+                        ],
+                    },
+                    {
+                        "tag": "a",
+                        "tasks": [
+                            {
+                                "tag": "x",
+                                "type": "transcriptions",
+                                "model": "local/qwen",
+                                "need_audio": True,
+                            }
+                        ],
+                    },
+                ],
+            )
+
+    def test_valid_variable_reference_same_block_not_allowed(self):
+        # Task in block 2 references task in block 1 — this is VALID
+        cfg = PipelineConfig(
+            output="{correct.final.result}",
+            blocks=[
+                {
+                    "tag": "stt",
+                    "tasks": [
+                        {
+                            "tag": "qwen",
+                            "type": "transcriptions",
+                            "model": "local/qwen",
+                            "need_audio": True,
+                        }
+                    ],
+                },
+                {
+                    "tag": "correct",
+                    "tasks": [
+                        {
+                            "tag": "final",
+                            "type": "chat",
+                            "model": "smart",
+                            "prompt": "Fix {stt.qwen.result}",
+                        }
+                    ],
+                },
+            ],
+        )
+        assert cfg.output == "{correct.final.result}"
+
+
+class TestLoadAllConfigs:
+    def test_load_valid_configs(self):
+        app_cfg, models_cfg, presets = load_all_configs(Path("config"))
+        assert app_cfg.default_preset == "default"
+        assert "default" in presets
+        assert "local-qwen" in models_cfg.providers
+        assert "smart" in models_cfg.model_groups
+
+    def test_nonexistent_directory(self):
+        with pytest.raises(ConfigError):
+            load_all_configs(Path("/nonexistent/path"))
+
+    def test_missing_preset_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            (tmppath / "app.yaml").write_text("default_preset: test")
+            (tmppath / "models.yaml").write_text("providers: {}\nmodel_groups: {}")
+            with pytest.raises(
+                ConfigError, match="[Pp]resets|[Dd]irectory|[Nn]ot found"
+            ):
+                load_all_configs(tmppath)
+
+    def test_default_preset_not_found(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            (tmppath / "app.yaml").write_text("default_preset: nonexistent")
+            (tmppath / "models.yaml").write_text("providers: {}\nmodel_groups: {}")
+            (tmppath / "presets").mkdir()
+            (tmppath / "presets" / "other.yaml").write_text(
+                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: smart'
+            )
+            (tmppath / "models.yaml").write_text(
+                "providers:\n  openai:\n    base_url: http://x\n    api_key: k\nmodel_groups:\n  smart:\n    - openai/gpt4"
+            )
+            with pytest.raises(ConfigError, match="default_preset|[Pp]reset"):
+                load_all_configs(tmppath)
+
+    def test_model_group_not_found(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            (tmppath / "app.yaml").write_text("default_preset: test")
+            (tmppath / "models.yaml").write_text("providers: {}\nmodel_groups: {}")
+            (tmppath / "presets").mkdir()
+            (tmppath / "presets" / "test.yaml").write_text(
+                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: nonexistent_group'
+            )
+            with pytest.raises(ConfigError, match="model_group|not.*exist"):
+                load_all_configs(tmppath)
+
+    def test_provider_not_found(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            (tmppath / "app.yaml").write_text("default_preset: test")
+            (tmppath / "models.yaml").write_text(
+                "providers:\n  other:\n    base_url: http://x\n    api_key: k\nmodel_groups: {}"
+            )
+            (tmppath / "presets").mkdir()
+            (tmppath / "presets" / "test.yaml").write_text(
+                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: transcriptions\n        model: openai/whisper\n        need_audio: true'
+            )
+            with pytest.raises(ConfigError, match="provider|not.*exist"):
+                load_all_configs(tmppath)
