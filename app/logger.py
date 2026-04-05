@@ -48,7 +48,7 @@ def setup_logging(level: str = "INFO") -> None:
             "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
             "<level>{level: <8}</level> | "
             "<cyan>{extra[session_id]}</cyan> | "
-            "<blue>{file.name}</blue> <yellow>{line}</yellow> | "
+            "<blue>{file.name}:{line}</blue> | "
             "<magenta>[{extra[preset_name]}]</magenta> "
             "<green>{extra[task_path]}</green> | "
             "<level>{message}</level>"
