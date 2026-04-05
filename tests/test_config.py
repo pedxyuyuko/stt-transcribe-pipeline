@@ -23,9 +23,9 @@ class TestAppConfig:
             AppConfig(api_key="sk-test", host="0.0.0.0", port=8000)
 
     def test_invalid_api_key_format(self):
-        with pytest.raises(ValidationError, match="[Ss][Kk]"):
+        with pytest.raises(ValidationError, match="alphanumeric"):
             AppConfig(
-                api_key="invalid-key",
+                api_key="invalid key!@#",
                 host="0.0.0.0",
                 port=8000,
                 default_preset="default",

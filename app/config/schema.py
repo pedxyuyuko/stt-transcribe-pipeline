@@ -27,8 +27,10 @@ class AppConfig(BaseModel):
     @field_validator("api_key")
     @classmethod
     def api_key_valid(cls, v: str) -> str:
-        if not re.match(r"^sk-[a-zA-Z0-9_-]+$", v):
-            raise ValueError("api_key must match OpenAI sk- format (e.g. sk-xyz123).")
+        if not re.match(r"^[a-zA-Z0-9_-]+$", v):
+            raise ValueError(
+                "api_key must contain only alphanumeric characters, underscores, and hyphens."
+            )
         return v
 
     @field_validator("model_groups")
