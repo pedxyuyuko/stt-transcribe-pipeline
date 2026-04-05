@@ -51,6 +51,7 @@ class ProviderClient:
         prompt: str | None = None,
         filename: str = "audio.wav",
         timeout: float | None = None,
+        model_params: dict[str, Any] | None = None,
     ) -> str:
         files = {
             "file": (filename, audio_bytes, "application/octet-stream"),
@@ -58,6 +59,9 @@ class ProviderClient:
         data = {"model": model}
         if prompt is not None:
             data["prompt"] = prompt
+        if model_params:
+            for key, value in model_params.items():
+                data[key] = str(value) if not isinstance(value, str) else value
 
         response = await client.post(
             f"{self._base_url}/audio/transcriptions",
@@ -106,13 +110,18 @@ class ProviderClient:
         messages: list[dict[str, Any]],
         model: str,
         timeout: float | None = None,
+        model_params: dict[str, Any] | None = None,
     ) -> str:
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+        }
+        if model_params:
+            body.update(model_params)
+
         response = await client.post(
             f"{self._base_url}/chat/completions",
-            json={
-                "model": model,
-                "messages": messages,
-            },
+            json=body,
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",

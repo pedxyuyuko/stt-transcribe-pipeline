@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from pydantic import BaseModel, field_validator, model_validator
-from typing import Literal, Dict, List
+from typing import Any, Literal, Dict, List
 
 
 class AppConfig(BaseModel):
@@ -54,6 +54,7 @@ class TaskConfig(BaseModel):
     prompt: str | None = None
     max_retries: int = 0
     timeout: float | None = None
+    model_params: Dict[str, Any] | None = None
 
 
 class BlockConfig(BaseModel):

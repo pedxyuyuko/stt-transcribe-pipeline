@@ -49,6 +49,7 @@ async def execute_stt_task(
         model=model_name,
         prompt=task.prompt,
         timeout=task.timeout,
+        model_params=task.model_params,
     )
     logger.debug("STT task output: {}", result)
     return result

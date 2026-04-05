@@ -63,6 +63,7 @@ async def execute_chat_task(
         messages=[{"role": "user", "content": content}],
         model=model_name,
         timeout=task.timeout,
+        model_params=task.model_params,
     )
     logger.debug("Chat task output: {}", result)
     return result
