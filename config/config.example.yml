@@ -3,14 +3,17 @@ port: 8000
 api_key: "sk-your-api-key-here"
 default_preset: "default"
 providers:
-  local-qwen:
-    base_url: "http://localhost:11434/v1"
-    api_key: "none"
+  openrouter:
+    base_url: "https://openrouter.ai/api/v1"
+    api_key: "sk-example-key"
+    headers:
+      HTTP-Referer: "https://github.com/pedxyuyuko/stt-transcribe-pipeline"
+      X-OpenRouter-Title: "STT Transcribe Pipeline"
   openai:
     base_url: "https://api.openai.com/v1"
     api_key: "sk-your-api-key-here"
 model_groups:
   smart:
-    - "openai/gpt-4o"
+    - "openrouter/openai/gpt-5.4-nano"
     - "openai/gpt-4o-mini"
 log_level: "INFO"

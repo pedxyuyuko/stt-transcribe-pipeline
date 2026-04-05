@@ -148,6 +148,8 @@ providers:
   openai:
     base_url: "https://api.openai.com/v1"
     api_key: "sk-your-openai-key"
+    headers:
+      X-Custom-Header: "custom-value"
 
 model_groups:
   smart:
@@ -178,12 +180,15 @@ providers:
   my-provider:
     base_url: "https://api.example.com/v1"
     api_key: "key-here"
+    headers:
+      X-Custom-Header: "custom-value"
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `base_url` | 字符串 | 是 | API 基地址。服务器会拼接 `/audio/transcriptions`（STT）和 `/chat/completions`（Chat）。末尾斜杠自动去除。 |
 | `api_key` | 字符串 | 是 | 以 `Authorization: Bearer <api_key>` 形式附加在每个请求中。 |
+| `headers` | 字典 | 否 | 每次请求该 Provider 时附加的自定义 HTTP 头。与默认头（`Authorization`）合并，自定义头优先级更高。 |
 
 Provider ID（YAML 键名，如 `my-provider`）用于引用模型：`my-provider/whisper-1`。
 

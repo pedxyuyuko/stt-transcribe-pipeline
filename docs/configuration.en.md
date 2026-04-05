@@ -148,6 +148,8 @@ providers:
   openai:
     base_url: "https://api.openai.com/v1"
     api_key: "sk-your-openai-key"
+    headers:
+      X-Custom-Header: "custom-value"
 
 model_groups:
   smart:
@@ -178,12 +180,15 @@ providers:
   my-provider:
     base_url: "https://api.example.com/v1"
     api_key: "key-here"
+    headers:
+      X-Custom-Header: "custom-value"
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `base_url` | string | Yes | Base URL of the API. The server appends `/audio/transcriptions` for STT and `/chat/completions` for chat. Trailing slashes are stripped. |
 | `api_key` | string | Yes | Sent as `Authorization: Bearer <api_key>` with every request to this provider. |
+| `headers` | dict | No | Custom HTTP headers to include in every request to this provider. Merged with default headers (`Authorization`). Custom headers take precedence over defaults. |
 
 The provider ID (the YAML key, e.g. `my-provider`) is used when referencing models: `my-provider/whisper-1`.
 
