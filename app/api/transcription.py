@@ -7,7 +7,12 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
 
 from app.config.schema import PipelineConfig
-from app.engine.pipeline import run_pipeline, get_pipeline_output, PipelineError
+from app.engine.pipeline import (
+    run_pipeline,
+    get_pipeline_output,
+    PipelineError,
+    PipelineFallback,
+)
 from app.services.providers import AllModelsFailedError
 from app.logger import generate_session_id, set_session_id, set_context
 
@@ -87,6 +92,28 @@ async def _handle_transcription(
             error_type="server_error",
             code="pipeline_error",
         )
+    except PipelineFallback as e:
+        elapsed = time.monotonic() - start_time
+        fallback_text = e.fallback_value
+        logger.warning(
+            "Pipeline failed at '{}.{}, returning checkpoint fallback | elapsed={:.3f}s",
+            e.failed_block,
+            e.failed_task,
+            elapsed,
+        )
+
+        if response_format == "text":
+            return PlainTextResponse(content=fallback_text)
+        elif response_format == "verbose_json":
+            return JSONResponse(
+                content={
+                    "text": fallback_text,
+                    "pipeline_results": dict(e.results),
+                    "checkpoint_fallback": True,
+                }
+            )
+        else:
+            return JSONResponse(content={"text": fallback_text})
     except AllModelsFailedError as e:
         logger.error("All models failed: {}", e)
         return _openai_error(

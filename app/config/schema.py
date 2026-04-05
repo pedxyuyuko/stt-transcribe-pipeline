@@ -57,12 +57,24 @@ class BlockConfig(BaseModel):
     tag: str
     name: str | None = None
     tasks: List[TaskConfig]
+    checkpoint: str | None = None
 
     @model_validator(mode="after")
     def task_tags_unique(self) -> BlockConfig:
         tags = [t.tag for t in self.tasks]
         if len(tags) != len(set(tags)):
             raise ValueError(f"Duplicate task tags in block '{self.tag}': {tags}")
+        return self
+
+    @model_validator(mode="after")
+    def checkpoint_valid(self) -> BlockConfig:
+        if self.checkpoint is not None:
+            task_tags = {t.tag for t in self.tasks}
+            if self.checkpoint not in task_tags:
+                raise ValueError(
+                    f"Block '{self.tag}' checkpoint '{self.checkpoint}' "
+                    f"does not match any task tag in this block. Available: {task_tags}"
+                )
         return self
 
 

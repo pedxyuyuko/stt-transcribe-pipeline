@@ -21,7 +21,7 @@ from loguru import logger
 
 
 class PipelineError(Exception):
-    """Raised when a pipeline task fails."""
+    """Raised when a pipeline task fails and no checkpoint can be used."""
 
     block_tag: str
     task_tag: str
@@ -33,6 +33,33 @@ class PipelineError(Exception):
         self.original_error = original_error
         super().__init__(
             f"Pipeline error in block '{block_tag}', task '{task_tag}': {original_error}"
+        )
+
+
+class PipelineFallback(Exception):
+    """Raised when a pipeline task fails, but a checkpointed value is available as fallback."""
+
+    failed_block: str
+    failed_task: str
+    fallback_value: str
+    results: ResultStore
+    original_error: Exception
+
+    def __init__(
+        self,
+        failed_block: str,
+        failed_task: str,
+        fallback_value: str,
+        results: ResultStore,
+        original_error: Exception,
+    ):
+        self.failed_block = failed_block
+        self.failed_task = failed_task
+        self.fallback_value = fallback_value
+        self.results = results
+        self.original_error = original_error
+        super().__init__(
+            f"Pipeline failed at '{failed_block}.{failed_task}', returning checkpoint fallback"
         )
 
 
@@ -72,6 +99,8 @@ async def run_pipeline(
     audio_bytes: bytes,
 ) -> ResultStore:
     results: ResultStore = {}
+    last_checkpoint_value: str | None = None
+
     logger.debug("Starting pipeline | blocks={}", len(preset.blocks))
 
     for block in preset.blocks:
@@ -148,21 +177,47 @@ async def run_pipeline(
                 )
         task_results = await asyncio.gather(*coros, return_exceptions=True)
 
-        for i, result in enumerate(task_results):
-            block_tag, task_tag = task_keys[i]
-            if isinstance(result, Exception):
-                raise PipelineError(
-                    block_tag=block_tag,
-                    task_tag=task_tag,
-                    original_error=result,
+        try:
+            for i, result in enumerate(task_results):
+                block_tag, task_tag = task_keys[i]
+                if isinstance(result, Exception):
+                    raise PipelineError(
+                        block_tag=block_tag,
+                        task_tag=task_tag,
+                        original_error=result,
+                    )
+                results[f"{block_tag}.{task_tag}"] = result
+                logger.debug(
+                    "  Task '{}.{}' completed | result_length={}",
+                    block_tag,
+                    task_tag,
+                    len(result) if isinstance(result, str) else "N/A",
                 )
-            results[f"{block_tag}.{task_tag}"] = result
-            logger.debug(
-                "  Task '{}.{}' completed | result_length={}",
-                block_tag,
-                task_tag,
-                len(result) if isinstance(result, str) else "N/A",
-            )
+        except PipelineError as e:
+            if last_checkpoint_value is not None:
+                logger.warning(
+                    "Block '{}' failed, returning checkpoint fallback | {}",
+                    block.tag,
+                    e.original_error,
+                )
+                raise PipelineFallback(
+                    failed_block=e.block_tag,
+                    failed_task=e.task_tag,
+                    fallback_value=last_checkpoint_value,
+                    results=results,
+                    original_error=e.original_error,
+                ) from e.original_error
+            raise
+
+        if block.checkpoint is not None:
+            checkpoint_key = f"{block.tag}.{block.checkpoint}"
+            if checkpoint_key in results:
+                last_checkpoint_value = results[checkpoint_key]
+                logger.debug(
+                    "Block '{}' checkpoint stored | value_length={}",
+                    block.tag,
+                    len(last_checkpoint_value),
+                )
 
     logger.debug("Pipeline finished | total_results={}", len(results))
     return results
