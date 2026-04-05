@@ -35,9 +35,10 @@ mkdir -p stt-transcribe-pipeline/config/presets && cd stt-transcribe-pipeline
 # 下载 docker-compose.yml 和配置模板
 curl -fsSLO https://raw.githubusercontent.com/uuz233/stt-transcribe-pipeline/master/docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/uuz233/stt-transcribe-pipeline/master/config/config.example.yml -o config/config.yml
+curl -fsSL https://raw.githubusercontent.com/uuz233/stt-transcribe-pipeline/master/config/presets/default.yaml.example -o config/presets/default.yaml
 ```
 
-2. 编辑 `config/config.yml` 填入你的 Provider 地址和 API Key，并在 `config/presets/` 下创建流水线预设文件（参考 [配置指南](docs/configuration.zh-CN.md)）。
+2. 编辑 `config/config.yml` 填入你的 Provider 地址和 API Key。默认流水线预设开箱即用，如需自定义请参考 [配置指南](docs/configuration.zh-CN.md)。
 
 3. 启动服务：
 

@@ -1,32 +1,28 @@
 output: "{correct.final.result}"
 blocks:
   - tag: "stt"
-    name: "Multi-provider STT"
+    name: "Speech-to-Text"
+    checkpoint: "whisper"
     tasks:
-      - tag: "qwen"
-        type: "transcriptions"
-        model: "local-qwen/qwen3-asr"
-        need_audio: true
-        prompt: "Technical discussion with English terms"
       - tag: "whisper"
         type: "transcriptions"
         model: "openai/whisper-1"
         need_audio: true
+
   - tag: "correct"
-    name: "LLM cross-comparison correction"
+    name: "LLM Correction"
     tasks:
       - tag: "final"
         type: "chat"
         model: "smart"
         max_retries: 2
-        need_audio: true
+        timeout: 60
         prompt: |
-          You have two STT transcription results from different models:
-          Version A (Qwen ASR): {stt.qwen.result}
-          Version B (Whisper): {stt.whisper.result}
-          Compare both versions with the audio. Output the most accurate transcription.
-          Rules:
+          You have an STT transcription result:
+          {stt.whisper.result}
+          Please correct it. Rules:
           1. Remove stuttering repetition (e.g. "head head" -> "head")
-          2. Remove filler words
-          3. Keep English technical terms in English, do not transliterate to Chinese
+          2. Remove filler words (um, uh, etc.)
+          3. Fix obvious grammar and punctuation errors
+          4. Keep the original meaning intact
           Output only the corrected text.

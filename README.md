@@ -38,9 +38,10 @@ mkdir -p stt-transcribe-pipeline/config/presets && cd stt-transcribe-pipeline
 # Download docker-compose.yml and example config
 curl -fsSLO https://raw.githubusercontent.com/uuz233/stt-transcribe-pipeline/master/docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/uuz233/stt-transcribe-pipeline/master/config/config.example.yml -o config/config.yml
+curl -fsSL https://raw.githubusercontent.com/uuz233/stt-transcribe-pipeline/master/config/presets/default.yaml.example -o config/presets/default.yaml
 ```
 
-2. Edit `config/config.yml` with your providers and API keys, then create your pipeline preset in `config/presets/default.yaml`. See the [Configuration Guide](docs/configuration.en.md) for the full reference.
+2. Edit `config/config.yml` with your providers and API keys. The default pipeline preset is ready to use out of the box. See the [Configuration Guide](docs/configuration.en.md) for customization options.
 
 3. Start with Docker Compose:
 
