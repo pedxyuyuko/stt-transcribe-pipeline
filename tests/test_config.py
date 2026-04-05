@@ -210,14 +210,19 @@ def _full_config(
 
 class TestLoadAllConfigs:
     def test_load_valid_configs(self):
-        (Path("config") / "config.yml").write_text(
-            _full_config(default_preset="default")
-        )
-        app_cfg, presets = load_all_configs(Path("config"))
-        assert app_cfg.default_preset == "default"
-        assert "default" in presets
-        assert "local-qwen" in app_cfg.providers
-        assert "smart" in app_cfg.model_groups
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            (tmppath / "config.yml").write_text(_full_config(default_preset="default"))
+            (tmppath / "presets").mkdir()
+            # Create a minimal preset matching the default preset
+            (tmppath / "presets" / "default.yaml").write_text(
+                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: smart'
+            )
+            app_cfg, presets = load_all_configs(tmppath)
+            assert app_cfg.default_preset == "default"
+            assert "default" in presets
+            assert "openai" in app_cfg.providers
+            assert "smart" in app_cfg.model_groups
 
     def test_nonexistent_directory(self):
         with pytest.raises(ConfigError):
