@@ -3,6 +3,7 @@
 # Sensitive config (API keys)
 config/models.yaml
 config/config.yml
+config/presets/default.yaml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
