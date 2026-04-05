@@ -65,7 +65,6 @@ class PipelineFallback(Exception):
 
 async def _call_task_with_retries(
     max_retries: int,
-    timeout: float | None = None,
     *,
     models: list[tuple[ProviderClient, str]],
     call_fn,
@@ -75,17 +74,15 @@ async def _call_task_with_retries(
     attempt = 0
     while True:
         try:
-            call = call_with_fallback(
+            return await call_with_fallback(
                 models=models,
                 call_fn=call_fn,
                 task_path=task_path,
             )
-            if timeout is not None:
-                result = await asyncio.wait_for(call, timeout=timeout)
-            else:
-                result = await call
-            return result
-        except (AllModelsFailedError, httpx.ConnectError) as exc:
+        except (
+            AllModelsFailedError,
+            httpx.ConnectError,
+        ) as exc:
             attempt += 1
             if attempt > max_retries:
                 raise
@@ -146,7 +143,6 @@ async def run_pipeline(
                 coros.append(
                     _call_task_with_retries(
                         max_retries=getattr(task, "max_retries", 0),
-                        timeout=getattr(task, "timeout", None),
                         models=model_list,
                         call_fn=_stt,
                         task_path=f"{block.tag}.{task.tag}",
@@ -178,7 +174,6 @@ async def run_pipeline(
                 coros.append(
                     _call_task_with_retries(
                         max_retries=getattr(task, "max_retries", 0),
-                        timeout=getattr(task, "timeout", None),
                         models=model_list,
                         call_fn=_chat,
                         task_path=f"{block.tag}.{task.tag}",

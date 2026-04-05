@@ -50,6 +50,7 @@ class ProviderClient:
         model: str,
         prompt: str | None = None,
         filename: str = "audio.wav",
+        timeout: float | None = None,
     ) -> str:
         files = {
             "file": (filename, audio_bytes, "application/octet-stream"),
@@ -63,6 +64,7 @@ class ProviderClient:
             files=files,
             data=data,
             headers={"Authorization": f"Bearer {self._api_key}"},
+            timeout=timeout,
         )
         if response.is_error:
             raise httpx.HTTPStatusError(
@@ -103,6 +105,7 @@ class ProviderClient:
         client: httpx.AsyncClient,
         messages: list[dict[str, Any]],
         model: str,
+        timeout: float | None = None,
     ) -> str:
         response = await client.post(
             f"{self._base_url}/chat/completions",
@@ -114,6 +117,7 @@ class ProviderClient:
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             },
+            timeout=timeout,
         )
         if response.is_error:
             raise httpx.HTTPStatusError(
@@ -235,7 +239,7 @@ async def call_with_fallback(
             # call_fn is awaited with provider, httpx_client, model_name
             result = await call_fn(provider_client, model_name)
             return result
-        except (httpx.HTTPStatusError, httpx.ConnectError) as e:
+        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as e:
             errors.append(
                 (
                     f"{provider_client._provider_id or provider_client.base_url}/{model_name}",

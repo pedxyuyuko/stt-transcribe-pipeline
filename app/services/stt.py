@@ -48,6 +48,7 @@ async def execute_stt_task(
         audio_bytes=audio_bytes,
         model=model_name,
         prompt=task.prompt,
+        timeout=task.timeout,
     )
     logger.debug("STT task output: {}", result)
     return result
