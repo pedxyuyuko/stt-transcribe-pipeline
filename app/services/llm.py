@@ -49,12 +49,20 @@ async def execute_chat_task(
 
     if audio_bytes is not None:
         b64 = base64.b64encode(audio_bytes).decode("utf-8")
-        content.append(
-            {
-                "type": "input_audio",
-                "input_audio": {"data": b64, "format": "wav"},
-            }
-        )
+        if task.audio_format == "audio_url":
+            content.append(
+                {
+                    "type": "audio_url",
+                    "audio_url": {"url": f"data:audio/wav;base64,{b64}"},
+                }
+            )
+        else:
+            content.append(
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": b64, "format": "wav"},
+                }
+            )
 
     result = await provider_client.post_chat(
         client=client,

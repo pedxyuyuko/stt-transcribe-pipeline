@@ -51,6 +51,7 @@ class TaskConfig(BaseModel):
     type: Literal["chat", "transcriptions"]
     model: str
     need_audio: bool = False
+    audio_format: Literal["input_audio", "audio_url"] = "input_audio"
     prompt: str | None = None
     max_retries: int = 0
     timeout: float | None = None
