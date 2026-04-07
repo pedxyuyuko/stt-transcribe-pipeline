@@ -264,6 +264,14 @@ blocks:
         max_retries: 2
         model_params:
           temperature: 0.3
+
+      # 示例：将音频发送给 VLLM/VibeVoice 兼容的 provider 的 chat 任务
+      # - tag: audio_correction
+      #   type: chat
+      #   model: "vllm-provider/some-model"
+      #   need_audio: true
+      #   audio_format: audio_url   # 默认为 "input_audio"（OpenAI 格式）
+      #   prompt: "根据音频纠正转录结果。"
 ```
 
 执行过程：
@@ -296,7 +304,8 @@ blocks:
 | `tag` | 字符串 | — | 是 | Task 在 Block 内的唯一标识。 |
 | `type` | 字符串 | — | 是 | `"transcriptions"`（STT）或 `"chat"`（LLM）。 |
 | `model` | 字符串 | — | 是 | `"provider_id/model_name"`（直接引用）或模型组名称（回退链）。 |
-| `need_audio` | 布尔 | `false` | 否 | 是否向此 Task 发送音频。`transcriptions` 类型始终发送。`chat` 类型设为 `true` 时以 base64 WAV 格式发送音频。 |
+| `need_audio` | 布尔 | `false` | 否 | 是否向此 Task 发送音频。`transcriptions` 类型始终发送。`chat` 类型设为 `true` 时以 `audio_format` 指定的格式发送 base64 WAV 音频。 |
+| `audio_format` | 字符串 | `"input_audio"` | 否 | `chat` 类型且 `need_audio` 为 true 时的音频内容格式。`"input_audio"`：OpenAI 原生格式（`{"type": "input_audio", "input_audio": {"data": "...", "format": "wav"}}`）。`"audio_url"`：data URI 格式，适用于 VLLM/VibeVoice 等兼容服务（`{"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,..."}}`）。`transcriptions` 类型忽略此字段。 |
 | `prompt` | 字符串 | `null` | 否 | 提示文本，支持 `{block.task.result}` 变量替换。`transcriptions` 类型作为 `prompt` 表单字段发送，`chat` 类型作为用户消息使用。 |
 | `max_retries` | 整型 | `0` | 否 | 所有模型失败后重试整条回退链的次数。`0` = 不重试。 |
 | `timeout` | 浮点数 | `null` | 否 | 单次请求超时（秒）。未设置时使用全局 HTTP 客户端超时（connect 10s、read 120s、write 30s）。 |
@@ -305,7 +314,7 @@ blocks:
 **Task 类型：**
 
 - **`transcriptions`** — 以 multipart 表单形式将音频 POST 到 `{base_url}/audio/transcriptions`，返回响应中的 `text` 字段。流式传输禁用（`stream: false`）。
-- **`chat`** — 以 JSON POST 到 `{base_url}/chat/completions`，发送包含 prompt（可选 base64 音频）的用户消息，返回 `choices[0].message.content`。流式传输禁用（`stream: false`）。
+- **`chat`** — 以 JSON POST 到 `{base_url}/chat/completions`，发送包含 prompt（可选 base64 音频）的用户消息。音频内容格式取决于 `audio_format` 设置：`"input_audio"` 使用 OpenAI 原生格式，`"audio_url"` 使用 data URI 格式，兼容 VLLM/VibeVoice。返回 `choices[0].message.content`。流式传输禁用（`stream: false`）。
 
 ### 3.6 变量替换
 

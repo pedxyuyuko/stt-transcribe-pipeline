@@ -264,6 +264,14 @@ blocks:
         max_retries: 2
         model_params:
           temperature: 0.3
+
+      # Example: chat task with audio sent to a VLLM/VibeVoice provider
+      # - tag: audio_correction
+      #   type: chat
+      #   model: "vllm-provider/some-model"
+      #   need_audio: true
+      #   audio_format: audio_url   # default is "input_audio" (OpenAI format)
+      #   prompt: "Correct the transcription based on the audio."
 ```
 
 What happens:
@@ -296,7 +304,8 @@ What happens:
 | `tag` | string | — | Yes | Unique identifier within the block. |
 | `type` | string | — | Yes | `"transcriptions"` (STT) or `"chat"` (LLM). |
 | `model` | string | — | Yes | Either `"provider_id/model_name"` (direct) or a model group name (fallback chain). |
-| `need_audio` | bool | `false` | No | Send audio to this task. Always true for `transcriptions`. For `chat`, sends audio as base64-encoded WAV. |
+| `need_audio` | bool | `false` | No | Send audio to this task. Always true for `transcriptions`. For `chat`, sends audio as base64-encoded WAV in the format specified by `audio_format`. |
+| `audio_format` | string | `"input_audio"` | No | Audio content format for `chat` tasks when `need_audio` is true. `"input_audio"`: OpenAI-native format (`{"type": "input_audio", "input_audio": {"data": "...", "format": "wav"}}`). `"audio_url"`: data URI format for VLLM/VibeVoice-compatible providers (`{"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,..."}}`). Ignored for `transcriptions` tasks. |
 | `prompt` | string | `null` | No | Prompt text. Supports `{block.task.result}` variable substitution. For `transcriptions`, sent as the `prompt` form field. For `chat`, used as the user message. |
 | `max_retries` | int | `0` | No | How many times to retry the entire fallback chain after all models fail. `0` = no retries. |
 | `timeout` | float | `null` | No | Per-request timeout in seconds. When not set, the global HTTP client timeouts apply (connect 10s, read 120s, write 30s). |
@@ -305,7 +314,7 @@ What happens:
 **Task types:**
 
 - **`transcriptions`** — POSTs audio as multipart form to `{base_url}/audio/transcriptions`. Returns the `text` field from the response. Streaming is disabled (`stream: false`).
-- **`chat`** — POSTs JSON to `{base_url}/chat/completions` with a user message containing the prompt (and optionally base64 audio). Returns `choices[0].message.content`. Streaming is disabled (`stream: false`).
+- **`chat`** — POSTs JSON to `{base_url}/chat/completions` with a user message containing the prompt (and optionally base64 audio). The audio content format depends on the `audio_format` setting: `"input_audio"` uses OpenAI's native format, `"audio_url"` uses a data URI format compatible with VLLM/VibeVoice. Returns `choices[0].message.content`. Streaming is disabled (`stream: false`).
 
 ### 3.6 Variable Substitution
 
