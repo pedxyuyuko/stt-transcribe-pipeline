@@ -255,12 +255,15 @@ blocks:
       - tag: corrected
         type: chat
         model: "smart"   # uses model group fallback chain
-        prompt: |
-          Fix spelling, grammar, and punctuation.
-          Return only the corrected text.
-
-          Raw transcription:
-          {stt.raw.result}
+        messages:
+          - role: "system"
+            content: |
+              Fix spelling, grammar, and punctuation.
+              Return only the corrected text.
+          - role: "user"
+            content: |
+              Raw transcription:
+              {stt.raw.result}
         max_retries: 2
         model_params:
           temperature: 0.3
@@ -271,7 +274,9 @@ blocks:
       #   model: "vllm-provider/some-model"
       #   need_audio: true
       #   audio_format: audio_url   # default is "input_audio" (OpenAI format)
-      #   prompt: "Correct the transcription based on the audio."
+      #   messages:
+      #     - role: "user"
+      #       content: "Correct the transcription based on the audio."
 ```
 
 What happens:
@@ -306,7 +311,8 @@ What happens:
 | `model` | string | — | Yes | Either `"provider_id/model_name"` (direct) or a model group name (fallback chain). |
 | `need_audio` | bool | `false` | No | Send audio to this task. Always true for `transcriptions`. For `chat`, sends audio as base64-encoded WAV in the format specified by `audio_format`. |
 | `audio_format` | string | `"input_audio"` | No | Audio content format for `chat` tasks when `need_audio` is true. `"input_audio"`: OpenAI-native format (`{"type": "input_audio", "input_audio": {"data": "...", "format": "wav"}}`). `"audio_url"`: data URI format for VLLM/VibeVoice-compatible providers (`{"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,..."}}`). Ignored for `transcriptions` tasks. |
-| `prompt` | string | `null` | No | Prompt text. Supports `{block.task.result}` variable substitution. For `transcriptions`, sent as the `prompt` form field. For `chat`, used as the user message. |
+| `prompt` | string | `null` | No | Prompt text for `transcriptions` tasks. Sent as the `prompt` form field in the STT request. Supports `{block.task.result}` variable substitution. Invalid for `chat` tasks; use `messages` instead. |
+| `messages` | list | `null` | No | Message list for `chat` tasks. Each entry is an object with `role` (e.g. `"system"`, `"user"`) and `content` (the text, supports `{block.task.result}` variable substitution). Sent as the `messages` array in the chat completions request. Required for `chat` tasks and invalid for `transcriptions` tasks. |
 | `max_retries` | int | `0` | No | How many times to retry the entire fallback chain after all models fail. `0` = no retries. |
 | `timeout` | float | `null` | No | Per-request timeout in seconds. When not set, the global HTTP client timeouts apply (connect 10s, read 120s, write 30s). |
 | `model_params` | dict | `null` | No | Extra parameters passed to the model API (e.g. `temperature`, `top_p`, `max_tokens`). Merged into the request body for `chat`, added as form fields for `transcriptions`. |
@@ -314,14 +320,20 @@ What happens:
 **Task types:**
 
 - **`transcriptions`** — POSTs audio as multipart form to `{base_url}/audio/transcriptions`. Returns the `text` field from the response. Streaming is disabled (`stream: false`).
-- **`chat`** — POSTs JSON to `{base_url}/chat/completions` with a user message containing the prompt (and optionally base64 audio). The audio content format depends on the `audio_format` setting: `"input_audio"` uses OpenAI's native format, `"audio_url"` uses a data URI format compatible with VLLM/VibeVoice. Returns `choices[0].message.content`. Streaming is disabled (`stream: false`).
+- **`chat`** — POSTs JSON to `{base_url}/chat/completions` with a `messages` array (and optionally base64 audio). The audio content format depends on the `audio_format` setting: `"input_audio"` uses OpenAI's native format, `"audio_url"` uses a data URI format compatible with VLLM/VibeVoice. Audio is attached to the last `user` message; if no `user` message exists, a new trailing `user` message containing only the audio payload is added. Returns `choices[0].message.content`. Streaming is disabled (`stream: false`).
 
 ### 3.6 Variable Substitution
 
-Use `{block_tag.task_tag.result}` in prompts to reference results from earlier blocks:
+Use `{block_tag.task_tag.result}` in prompt or message content to reference results from earlier blocks:
 
 ```yaml
+# transcriptions task
 prompt: "Correct this: {stt.raw.result}"
+
+# chat task
+messages:
+  - role: "user"
+    content: "Correct this: {stt.raw.result}"
 ```
 
 Rules:
@@ -344,7 +356,7 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
   │    │
   │    ├── for each task in block (parallel via asyncio.gather):
   │    │    ├── resolve_model() → [(ProviderClient, model_name), ...]
-  │    │    ├── resolve_variables(prompt, results)  [chat only]
+  │    │    ├── resolve_variables(messages, results)  [chat only]
   │    │    └── _call_task_with_retries()
   │    │         ├── call_with_fallback()
   │    │         │    ├── try each (client, model):

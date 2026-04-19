@@ -255,12 +255,15 @@ blocks:
       - tag: corrected
         type: chat
         model: "smart"   # 使用模型组回退链
-        prompt: |
-          修正拼写、语法和标点符号错误。
-          只返回修正后的文本。
-
-          原始转录：
-          {stt.raw.result}
+        messages:
+          - role: "system"
+            content: |
+              修正拼写、语法和标点符号错误。
+              只返回修正后的文本。
+          - role: "user"
+            content: |
+              原始转录：
+              {stt.raw.result}
         max_retries: 2
         model_params:
           temperature: 0.3
@@ -271,7 +274,9 @@ blocks:
       #   model: "vllm-provider/some-model"
       #   need_audio: true
       #   audio_format: audio_url   # 默认为 "input_audio"（OpenAI 格式）
-      #   prompt: "根据音频纠正转录结果。"
+      #   messages:
+      #     - role: "user"
+      #       content: "根据音频纠正转录结果。"
 ```
 
 执行过程：
@@ -306,7 +311,8 @@ blocks:
 | `model` | 字符串 | — | 是 | `"provider_id/model_name"`（直接引用）或模型组名称（回退链）。 |
 | `need_audio` | 布尔 | `false` | 否 | 是否向此 Task 发送音频。`transcriptions` 类型始终发送。`chat` 类型设为 `true` 时以 `audio_format` 指定的格式发送 base64 WAV 音频。 |
 | `audio_format` | 字符串 | `"input_audio"` | 否 | `chat` 类型且 `need_audio` 为 true 时的音频内容格式。`"input_audio"`：OpenAI 原生格式（`{"type": "input_audio", "input_audio": {"data": "...", "format": "wav"}}`）。`"audio_url"`：data URI 格式，适用于 VLLM/VibeVoice 等兼容服务（`{"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,..."}}`）。`transcriptions` 类型忽略此字段。 |
-| `prompt` | 字符串 | `null` | 否 | 提示文本，支持 `{block.task.result}` 变量替换。`transcriptions` 类型作为 `prompt` 表单字段发送，`chat` 类型作为用户消息使用。 |
+| `prompt` | 字符串 | `null` | 否 | `transcriptions` 类型的提示文本，作为 `prompt` 表单字段发送。支持 `{block.task.result}` 变量替换。对 `chat` 类型无效；请改用 `messages`。 |
+| `messages` | 列表 | `null` | 否 | `chat` 类型的消息列表。每个条目是包含 `role`（如 `"system"`、`"user"`）和 `content`（文本，支持 `{block.task.result}` 变量替换）的对象。作为 `messages` 数组发送到 chat completions 接口。`chat` 类型必须提供此字段；`transcriptions` 类型禁止使用。 |
 | `max_retries` | 整型 | `0` | 否 | 所有模型失败后重试整条回退链的次数。`0` = 不重试。 |
 | `timeout` | 浮点数 | `null` | 否 | 单次请求超时（秒）。未设置时使用全局 HTTP 客户端超时（connect 10s、read 120s、write 30s）。 |
 | `model_params` | 字典 | `null` | 否 | 传递给模型 API 的额外参数（如 `temperature`、`top_p`、`max_tokens`）。`chat` 类型合并到 JSON 请求体，`transcriptions` 类型添加为表单字段。 |
@@ -314,14 +320,20 @@ blocks:
 **Task 类型：**
 
 - **`transcriptions`** — 以 multipart 表单形式将音频 POST 到 `{base_url}/audio/transcriptions`，返回响应中的 `text` 字段。流式传输禁用（`stream: false`）。
-- **`chat`** — 以 JSON POST 到 `{base_url}/chat/completions`，发送包含 prompt（可选 base64 音频）的用户消息。音频内容格式取决于 `audio_format` 设置：`"input_audio"` 使用 OpenAI 原生格式，`"audio_url"` 使用 data URI 格式，兼容 VLLM/VibeVoice。返回 `choices[0].message.content`。流式传输禁用（`stream: false`）。
+- **`chat`** — 以 JSON POST 到 `{base_url}/chat/completions`，发送 `messages` 数组（可选 base64 音频）。音频内容格式取决于 `audio_format` 设置：`"input_audio"` 使用 OpenAI 原生格式，`"audio_url"` 使用 data URI 格式，兼容 VLLM/VibeVoice。音频会附加到最后一个 `user` 消息；如果没有 `user` 消息，则会在末尾补一个仅包含音频内容的 `user` 消息。返回 `choices[0].message.content`。流式传输禁用（`stream: false`）。
 
 ### 3.6 变量替换
 
-在 prompt 中用 `{block_tag.task_tag.result}` 引用前面 Block 的结果：
+在 prompt 或消息内容中用 `{block_tag.task_tag.result}` 引用前面 Block 的结果：
 
 ```yaml
+# transcriptions 任务
 prompt: "纠正这段文字：{stt.raw.result}"
+
+# chat 任务
+messages:
+  - role: "user"
+    content: "纠正这段文字：{stt.raw.result}"
 ```
 
 规则：
@@ -344,7 +356,7 @@ run_pipeline(preset, app_config, http_client, audio_bytes)
   │    │
   │    ├── 遍历 block 中的每个 task（asyncio.gather 并行）:
   │    │    ├── resolve_model() → [(ProviderClient, model_name), ...]
-  │    │    ├── resolve_variables(prompt, results)  [仅 chat]
+  │    │    ├── resolve_variables(messages, results)  [仅 chat]
   │    │    └── _call_task_with_retries()
   │    │         ├── call_with_fallback()
   │    │         │    ├── 遍历 (client, model):
