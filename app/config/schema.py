@@ -66,9 +66,9 @@ class TaskConfig(BaseModel):
     @model_validator(mode="after")
     def task_fields_valid(self) -> TaskConfig:
         if self.type == "chat":
-            if not self.messages:
+            if not self.messages and not self.need_audio:
                 raise ValueError(
-                    "Chat task must have 'messages' (non-empty list of {role, content})."
+                    "Chat task must have non-empty 'messages' unless 'need_audio' is true."
                 )
             if self.prompt is not None:
                 raise ValueError(

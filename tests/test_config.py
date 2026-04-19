@@ -175,7 +175,11 @@ class TestPipelineConfig:
         )
         assert cfg.output == "{correct.final.result}"
 
-    def test_chat_task_requires_messages(self):
+    def test_chat_task_allows_missing_messages_with_audio(self):
+        task = TaskConfig(tag="x", type="chat", model="smart", need_audio=True)
+        assert task.messages is None
+
+    def test_chat_task_requires_messages_without_audio(self):
         with pytest.raises(ValidationError, match="[Mm]essages"):
             _ = TaskConfig(tag="x", type="chat", model="smart")
 
@@ -202,7 +206,13 @@ class TestPipelineConfig:
         t = TaskConfig(tag="x", type="transcriptions", model="local/qwen", prompt="ctx")
         assert t.prompt == "ctx"
 
-    def test_chat_task_empty_messages_rejected(self):
+    def test_chat_task_allows_empty_messages_with_audio(self):
+        task = TaskConfig(
+            tag="x", type="chat", model="smart", need_audio=True, messages=[]
+        )
+        assert task.messages == []
+
+    def test_chat_task_rejects_empty_messages_without_audio(self):
         with pytest.raises(ValidationError, match="[Mm]essages"):
             _ = TaskConfig(tag="x", type="chat", model="smart", messages=[])
 
