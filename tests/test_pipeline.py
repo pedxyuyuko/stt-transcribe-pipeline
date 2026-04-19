@@ -153,6 +153,49 @@ async def test_two_blocks_variable_passing(
     assert results["correct.final"] == "hello world"
 
 
+@pytest.mark.asyncio
+async def test_chat_task_without_messages_uses_audio_only_payload(
+    app_config_with_group, httpx_mock
+):
+    import httpx
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        need_audio=True,
+                    )
+                ],
+            )
+        ],
+    )
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "audio only ok"}}]},
+        method="POST",
+    )
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+        )
+
+    assert results["correct.final"] == "audio only ok"
+    request = httpx_mock.get_requests()[0]
+    payload = request.read().decode("utf-8")
+    assert '"messages":[{"role":"user","content":[{"type":"input_audio"' in payload
+
+
 def test_get_pipeline_output():
     results = {"stt.qwen": "hello", "correct.final": "world"}
     output = get_pipeline_output("{correct.final.result}", results)

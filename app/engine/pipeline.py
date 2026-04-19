@@ -163,9 +163,9 @@ async def run_pipeline(
                 )
 
             elif task.type == "chat":
-                assert task.messages is not None
                 resolved_messages: list[dict[str, str]] = [
-                    {"role": msg.role, "content": msg.content} for msg in task.messages
+                    {"role": msg.role, "content": msg.content}
+                    for msg in (task.messages or [])
                 ]
                 resolved_messages = resolve_messages_variables(
                     resolved_messages, results
