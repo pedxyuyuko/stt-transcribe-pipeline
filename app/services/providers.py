@@ -83,9 +83,10 @@ class ProviderClient:
             },
         )
         logger.info(
-            "STT request | provider={} | model={}",
+            "STT request | provider={} | model={} | timeout={}",
             self._provider_id or self._base_url,
-            model
+            model,
+            timeout,
         )
 
         headers = {"Authorization": f"Bearer {self._api_key}", **self._headers}
@@ -153,6 +154,12 @@ class ProviderClient:
                 **{k: v for k, v in body.items() if k != "messages"},
                 "messages": body.get("messages"),
             },
+        )
+        logger.info(
+            "Chat request | provider={} | model={} | timeout={}",
+            self._provider_id or self._base_url,
+            model,
+            timeout,
         )
 
         headers = {
