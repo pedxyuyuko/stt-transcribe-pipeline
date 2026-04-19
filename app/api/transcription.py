@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 from fastapi import APIRouter, Form, UploadFile, Request
@@ -20,6 +21,18 @@ router = APIRouter()
 
 MAX_AUDIO_SIZE = 25 * 1024 * 1024
 
+SUPPORTED_AUDIO_INPUT_FORMATS = {
+    ".flac": "flac",
+    ".m4a": "m4a",
+    ".mp3": "mp3",
+    ".mp4": "mp4",
+    ".mpeg": "mpeg",
+    ".mpga": "mpga",
+    ".ogg": "ogg",
+    ".wav": "wav",
+    ".webm": "webm",
+}
+
 ERROR_FILE_TOO_LARGE = {
     "error": {
         "message": "Audio file too large. Maximum size is 25MB.",
@@ -34,6 +47,14 @@ def _openai_error(message: str, error_type: str, code: str) -> JSONResponse:
         status_code=500,
         content={"error": {"message": message, "type": error_type, "code": code}},
     )
+
+
+def _infer_audio_input_format(filename: str | None) -> str:
+    if not filename:
+        return "wav"
+
+    _, ext = os.path.splitext(filename)
+    return SUPPORTED_AUDIO_INPUT_FORMATS.get(ext.lower(), "wav")
 
 
 async def _handle_transcription(
@@ -53,6 +74,7 @@ async def _handle_transcription(
 
     audio_bytes = await file.read()
     audio_filename = file.filename or "audio.wav"
+    audio_input_format = _infer_audio_input_format(audio_filename)
 
     # --- log request metadata (info level) ---
     client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
@@ -63,6 +85,11 @@ async def _handle_transcription(
         client_ip,
         len(audio_bytes),
         audio_filename,
+    )
+    logger.debug(
+        "Detected uploaded audio format | filename={} | input_audio_format={}",
+        audio_filename,
+        audio_input_format,
     )
 
     if len(audio_bytes) > MAX_AUDIO_SIZE:
@@ -82,6 +109,7 @@ async def _handle_transcription(
             client=request.app.state.http_client,
             audio_bytes=audio_bytes,
             audio_filename=audio_filename,
+            audio_input_format=audio_input_format,
         )
     except PipelineError as e:
         logger.error(
