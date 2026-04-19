@@ -57,6 +57,7 @@ class TaskConfig(BaseModel):
     model: str
     need_audio: bool = False
     audio_format: Literal["input_audio", "audio_url"] = "input_audio"
+    audio_force_transcode: Literal["wav", "mp3"] | None = None
     prompt: str | None = None
     messages: List[MessageConfig] | None = None
     max_retries: int = 0
@@ -73,6 +74,10 @@ class TaskConfig(BaseModel):
             if self.prompt is not None:
                 raise ValueError(
                     "Chat task must not use 'prompt'; use 'messages' instead."
+                )
+            if self.audio_force_transcode is not None and not self.need_audio:
+                raise ValueError(
+                    "Chat task with 'audio_force_transcode' must set 'need_audio' to true."
                 )
         elif self.type == "transcriptions":
             if self.messages is not None:

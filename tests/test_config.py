@@ -212,6 +212,44 @@ class TestPipelineConfig:
         )
         assert task.messages == []
 
+    def test_audio_force_transcode_accepts_valid_values(self):
+        wav_task = TaskConfig(
+            tag="x",
+            type="chat",
+            model="smart",
+            need_audio=True,
+            audio_force_transcode="wav",
+        )
+        mp3_task = TaskConfig(
+            tag="y",
+            type="transcriptions",
+            model="local/qwen",
+            audio_force_transcode="mp3",
+        )
+        assert wav_task.audio_force_transcode == "wav"
+        assert mp3_task.audio_force_transcode == "mp3"
+
+    def test_audio_force_transcode_rejects_invalid_value(self):
+        with pytest.raises(ValidationError, match="wav|mp3"):
+            _ = TaskConfig.model_validate(
+                {
+                    "tag": "x",
+                    "type": "transcriptions",
+                    "model": "local/qwen",
+                    "audio_force_transcode": "m4a",
+                }
+            )
+
+    def test_chat_audio_force_transcode_requires_need_audio(self):
+        with pytest.raises(ValidationError, match="need_audio"):
+            _ = TaskConfig(
+                tag="x",
+                type="chat",
+                model="smart",
+                messages=[MessageConfig(role="user", content="hello")],
+                audio_force_transcode="wav",
+            )
+
     def test_chat_task_rejects_empty_messages_without_audio(self):
         with pytest.raises(ValidationError, match="[Mm]essages"):
             _ = TaskConfig(tag="x", type="chat", model="smart", messages=[])
