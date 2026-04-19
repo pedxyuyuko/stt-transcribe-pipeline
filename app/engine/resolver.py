@@ -43,13 +43,23 @@ def resolve_variables(template: str, results: ResultStore) -> str:
     # Pattern: {block_tag.task_tag.result} — exactly word.word.result
     pattern = re.compile(r"\{([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\.result\}")
 
-    def replacer(match: re.Match) -> str:
+    def replacer(match: re.Match[str]) -> str:
         key = match.group(1)  # "block_tag.task_tag"
         if key not in results:
             raise VariableNotFoundError(match.group(0))
         return results[key]
 
     return pattern.sub(replacer, template)
+
+
+def resolve_messages_variables(
+    messages: list[dict[str, str]], results: ResultStore
+) -> list[dict[str, str]]:
+    """Resolve {block.task.result} patterns in each message's content string."""
+    return [
+        {**msg, "content": resolve_variables(msg["content"], results)}
+        for msg in messages
+    ]
 
 
 def validate_variable_refs(pipeline) -> None:
@@ -94,10 +104,13 @@ def validate_variable_refs(pipeline) -> None:
     seen: set[str] = set()
     for block in pipeline.blocks:
         for task in block.tasks:
+            content_strings: list[str] = []
             if task.prompt:
-                refs = re.findall(
-                    r"\{([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\.result\}", task.prompt
-                )
+                content_strings.append(task.prompt)
+            if task.messages:
+                content_strings.extend(msg.content for msg in task.messages)
+            for text in content_strings:
+                refs = re.findall(r"\{([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\.result\}", text)
                 for ref in refs:
                     if ref not in seen:
                         raise ValueError(

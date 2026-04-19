@@ -11,7 +11,7 @@ class AppConfig(BaseModel):
     port: int = 8000
     api_key: str
     default_preset: str
-    providers: Dict[str, ProviderConfig] = {}
+    providers: Dict[str, "ProviderConfig"] = {}
     model_groups: Dict[str, List[str]] = {}
     log_level: str = "INFO"
 
@@ -46,6 +46,11 @@ class AppConfig(BaseModel):
         return v
 
 
+class MessageConfig(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
 class TaskConfig(BaseModel):
     tag: str
     type: Literal["chat", "transcriptions"]
@@ -53,9 +58,28 @@ class TaskConfig(BaseModel):
     need_audio: bool = False
     audio_format: Literal["input_audio", "audio_url"] = "input_audio"
     prompt: str | None = None
+    messages: List[MessageConfig] | None = None
     max_retries: int = 0
     timeout: float | None = None
     model_params: Dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def task_fields_valid(self) -> TaskConfig:
+        if self.type == "chat":
+            if not self.messages:
+                raise ValueError(
+                    "Chat task must have 'messages' (non-empty list of {role, content})."
+                )
+            if self.prompt is not None:
+                raise ValueError(
+                    "Chat task must not use 'prompt'; use 'messages' instead."
+                )
+        elif self.type == "transcriptions":
+            if self.messages is not None:
+                raise ValueError(
+                    "Transcriptions task must not use 'messages'; use 'prompt' instead."
+                )
+        return self
 
 
 class BlockConfig(BaseModel):
@@ -107,9 +131,14 @@ class PipelineConfig(BaseModel):
         seen: set[str] = set()
         for block in self.blocks:
             for task in block.tasks:
+                content_strings: list[str] = []
                 if task.prompt:
+                    content_strings.append(task.prompt)
+                if task.messages:
+                    content_strings.extend(msg.content for msg in task.messages)
+                for text in content_strings:
                     refs = re.findall(
-                        r"\{([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\.result\}", task.prompt
+                        r"\{([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\.result\}", text
                     )
                     for ref in refs:
                         if ref not in seen:

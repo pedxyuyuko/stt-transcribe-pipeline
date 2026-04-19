@@ -3,8 +3,24 @@ from pydantic import ValidationError
 from pathlib import Path
 import tempfile
 
-from app.config.schema import AppConfig, PipelineConfig, ProviderConfig
-from app.config.loader import load_all_configs, ConfigError, load_app_config
+from app.config.schema import (
+    AppConfig,
+    BlockConfig,
+    MessageConfig,
+    PipelineConfig,
+    ProviderConfig,
+    TaskConfig,
+)
+from app.config.loader import load_all_configs, ConfigError
+
+
+def make_chat_task(tag: str, content: str = "hello") -> TaskConfig:
+    return TaskConfig(
+        tag=tag,
+        type="chat",
+        model="smart",
+        messages=[MessageConfig(role="user", content=content)],
+    )
 
 
 class TestAppConfig:
@@ -20,7 +36,9 @@ class TestAppConfig:
 
     def test_missing_default_preset(self):
         with pytest.raises(ValidationError):
-            AppConfig(api_key="sk-test", host="0.0.0.0", port=8000)
+            _ = AppConfig.model_validate(
+                {"api_key": "sk-test", "host": "0.0.0.0", "port": 8000}
+            )
 
     def test_invalid_api_key_format(self):
         with pytest.raises(ValidationError, match="alphanumeric"):
@@ -44,7 +62,7 @@ class TestAppConfig:
         cfg = AppConfig(
             api_key="sk-test",
             default_preset="default",
-            providers={"openai": {"base_url": "http://x", "api_key": "k"}},
+            providers={"openai": ProviderConfig(base_url="http://x", api_key="k")},
             model_groups={"smart": ["openai/gpt-4o"]},
         )
         assert "openai" in cfg.providers
@@ -69,17 +87,17 @@ class TestPipelineConfig:
         cfg = PipelineConfig(
             output="{stt.qwen.result}",
             blocks=[
-                {
-                    "tag": "stt",
-                    "tasks": [
-                        {
-                            "tag": "qwen",
-                            "type": "transcriptions",
-                            "model": "local/qwen3",
-                            "need_audio": True,
-                        }
+                BlockConfig(
+                    tag="stt",
+                    tasks=[
+                        TaskConfig(
+                            tag="qwen",
+                            type="transcriptions",
+                            model="local/qwen3",
+                            need_audio=True,
+                        )
                     ],
-                }
+                )
             ],
         )
         assert len(cfg.blocks) == 1
@@ -89,14 +107,8 @@ class TestPipelineConfig:
             PipelineConfig(
                 output="{a.x.result}",
                 blocks=[
-                    {
-                        "tag": "a",
-                        "tasks": [{"tag": "x", "type": "chat", "model": "smart"}],
-                    },
-                    {
-                        "tag": "a",
-                        "tasks": [{"tag": "y", "type": "chat", "model": "smart"}],
-                    },
+                    BlockConfig(tag="a", tasks=[make_chat_task("x")]),
+                    BlockConfig(tag="a", tasks=[make_chat_task("y")]),
                 ],
             )
 
@@ -105,13 +117,9 @@ class TestPipelineConfig:
             PipelineConfig(
                 output="{a.x.result}",
                 blocks=[
-                    {
-                        "tag": "a",
-                        "tasks": [
-                            {"tag": "x", "type": "chat", "model": "smart"},
-                            {"tag": "x", "type": "chat", "model": "smart"},
-                        ],
-                    }
+                    BlockConfig(
+                        tag="a", tasks=[make_chat_task("x"), make_chat_task("x")]
+                    )
                 ],
             )
 
@@ -119,12 +127,7 @@ class TestPipelineConfig:
         with pytest.raises(ValidationError, match="[Oo]utput"):
             PipelineConfig(
                 output="not-a-variable",
-                blocks=[
-                    {
-                        "tag": "a",
-                        "tasks": [{"tag": "x", "type": "chat", "model": "smart"}],
-                    }
-                ],
+                blocks=[BlockConfig(tag="a", tasks=[make_chat_task("x")])],
             )
 
     def test_forward_variable_reference(self):
@@ -132,28 +135,20 @@ class TestPipelineConfig:
             PipelineConfig(
                 output="{b.y.result}",
                 blocks=[
-                    {
-                        "tag": "b",
-                        "tasks": [
-                            {
-                                "tag": "y",
-                                "type": "chat",
-                                "model": "smart",
-                                "prompt": "Fix {a.x.result}",
-                            }
+                    BlockConfig(
+                        tag="b", tasks=[make_chat_task("y", "Fix {a.x.result}")]
+                    ),
+                    BlockConfig(
+                        tag="a",
+                        tasks=[
+                            TaskConfig(
+                                tag="x",
+                                type="transcriptions",
+                                model="local/qwen",
+                                need_audio=True,
+                            )
                         ],
-                    },
-                    {
-                        "tag": "a",
-                        "tasks": [
-                            {
-                                "tag": "x",
-                                "type": "transcriptions",
-                                "model": "local/qwen",
-                                "need_audio": True,
-                            }
-                        ],
-                    },
+                    ),
                 ],
             )
 
@@ -161,31 +156,55 @@ class TestPipelineConfig:
         cfg = PipelineConfig(
             output="{correct.final.result}",
             blocks=[
-                {
-                    "tag": "stt",
-                    "tasks": [
-                        {
-                            "tag": "qwen",
-                            "type": "transcriptions",
-                            "model": "local/qwen",
-                            "need_audio": True,
-                        }
+                BlockConfig(
+                    tag="stt",
+                    tasks=[
+                        TaskConfig(
+                            tag="qwen",
+                            type="transcriptions",
+                            model="local/qwen",
+                            need_audio=True,
+                        )
                     ],
-                },
-                {
-                    "tag": "correct",
-                    "tasks": [
-                        {
-                            "tag": "final",
-                            "type": "chat",
-                            "model": "smart",
-                            "prompt": "Fix {stt.qwen.result}",
-                        }
-                    ],
-                },
+                ),
+                BlockConfig(
+                    tag="correct",
+                    tasks=[make_chat_task("final", "Fix {stt.qwen.result}")],
+                ),
             ],
         )
         assert cfg.output == "{correct.final.result}"
+
+    def test_chat_task_requires_messages(self):
+        with pytest.raises(ValidationError, match="[Mm]essages"):
+            _ = TaskConfig(tag="x", type="chat", model="smart")
+
+    def test_chat_task_forbids_prompt(self):
+        with pytest.raises(ValidationError, match="[Pp]rompt"):
+            _ = TaskConfig(
+                tag="x",
+                type="chat",
+                model="smart",
+                messages=[MessageConfig(role="user", content="hello")],
+                prompt="should not be here",
+            )
+
+    def test_transcriptions_task_forbids_messages(self):
+        with pytest.raises(ValidationError, match="[Mm]essages"):
+            _ = TaskConfig(
+                tag="x",
+                type="transcriptions",
+                model="local/qwen",
+                messages=[MessageConfig(role="user", content="hello")],
+            )
+
+    def test_transcriptions_task_allows_prompt(self):
+        t = TaskConfig(tag="x", type="transcriptions", model="local/qwen", prompt="ctx")
+        assert t.prompt == "ctx"
+
+    def test_chat_task_empty_messages_rejected(self):
+        with pytest.raises(ValidationError, match="[Mm]essages"):
+            _ = TaskConfig(tag="x", type="chat", model="smart", messages=[])
 
 
 def _full_config(
@@ -216,7 +235,7 @@ class TestLoadAllConfigs:
             (tmppath / "presets").mkdir()
             # Create a minimal preset matching the default preset
             (tmppath / "presets" / "default.yaml").write_text(
-                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: smart'
+                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: smart\n        messages:\n          - role: user\n            content: hello'
             )
             app_cfg, presets = load_all_configs(tmppath)
             assert app_cfg.default_preset == "default"
@@ -245,7 +264,7 @@ class TestLoadAllConfigs:
             )
             (tmppath / "presets").mkdir()
             (tmppath / "presets" / "other.yaml").write_text(
-                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: smart'
+                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: smart\n        messages:\n          - role: user\n            content: hello'
             )
             with pytest.raises(ConfigError, match="default_preset|[Pp]reset"):
                 load_all_configs(tmppath)
@@ -256,7 +275,7 @@ class TestLoadAllConfigs:
             (tmppath / "config.yml").write_text(_full_config())
             (tmppath / "presets").mkdir()
             (tmppath / "presets" / "test.yaml").write_text(
-                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: nonexistent_group'
+                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: nonexistent_group\n        messages:\n          - role: user\n            content: hello'
             )
             with pytest.raises(ConfigError, match="model_group|not.*exist"):
                 load_all_configs(tmppath)

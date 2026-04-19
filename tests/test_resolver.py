@@ -3,9 +3,11 @@ from types import SimpleNamespace
 
 from app.engine.resolver import (
     resolve_variables,
+    resolve_messages_variables,
     VariableNotFoundError,
     validate_variable_refs,
 )
+from app.config.schema import BlockConfig, MessageConfig, TaskConfig
 
 
 class TestResolveVariables:
@@ -26,7 +28,7 @@ class TestResolveVariables:
 
     def test_missing_variable_raises(self):
         with pytest.raises(VariableNotFoundError):
-            resolve_variables("{nonexistent.block.result}", {})
+            _ = resolve_variables("{nonexistent.block.result}", {})
 
     def test_json_braces_preserved(self):
         result = resolve_variables('Return JSON: {"key": "val"}', {})
@@ -50,40 +52,45 @@ class TestValidateVariableRefs:
         cfg = PipelineConfig(
             output="{correct.final.result}",
             blocks=[
-                {
-                    "tag": "stt",
-                    "tasks": [
-                        {
-                            "tag": "qwen",
-                            "type": "transcriptions",
-                            "model": "local/qwen",
-                            "need_audio": True,
-                        }
+                BlockConfig(
+                    tag="stt",
+                    tasks=[
+                        TaskConfig(
+                            tag="qwen",
+                            type="transcriptions",
+                            model="local/qwen",
+                            need_audio=True,
+                        )
                     ],
-                },
-                {
-                    "tag": "correct",
-                    "tasks": [
-                        {
-                            "tag": "final",
-                            "type": "chat",
-                            "model": "smart",
-                            "prompt": "Fix {stt.qwen.result}",
-                        }
+                ),
+                BlockConfig(
+                    tag="correct",
+                    tasks=[
+                        TaskConfig(
+                            tag="final",
+                            type="chat",
+                            model="smart",
+                            messages=[
+                                MessageConfig(
+                                    role="user", content="Fix {stt.qwen.result}"
+                                )
+                            ],
+                        )
                     ],
-                },
+                ),
             ],
         )
         validate_variable_refs(cfg)
 
     def test_forward_reference_caught(self):
-        from app.config.schema import BlockConfig, TaskConfig
-
         block_b = BlockConfig(
             tag="b",
             tasks=[
                 TaskConfig(
-                    tag="y", type="chat", model="smart", prompt="Fix {a.x.result}"
+                    tag="y",
+                    type="chat",
+                    model="smart",
+                    messages=[MessageConfig(role="user", content="Fix {a.x.result}")],
                 )
             ],
         )
@@ -103,11 +110,16 @@ class TestValidateVariableRefs:
             validate_variable_refs(cfg)
 
     def test_invalid_output_format(self):
-        from app.config.schema import BlockConfig, TaskConfig
-
         block_a = BlockConfig(
             tag="a",
-            tasks=[TaskConfig(tag="x", type="chat", model="smart")],
+            tasks=[
+                TaskConfig(
+                    tag="x",
+                    type="chat",
+                    model="smart",
+                    messages=[MessageConfig(role="user", content="hello")],
+                )
+            ],
         )
         cfg = SimpleNamespace(
             output="invalid",
@@ -117,11 +129,16 @@ class TestValidateVariableRefs:
             validate_variable_refs(cfg)
 
     def test_output_references_nonexistent_task(self):
-        from app.config.schema import BlockConfig, TaskConfig
-
         block_a = BlockConfig(
             tag="a",
-            tasks=[TaskConfig(tag="x", type="chat", model="smart")],
+            tasks=[
+                TaskConfig(
+                    tag="x",
+                    type="chat",
+                    model="smart",
+                    messages=[MessageConfig(role="user", content="hello")],
+                )
+            ],
         )
         cfg = SimpleNamespace(
             output="{nonexistent.task.result}",
@@ -129,3 +146,29 @@ class TestValidateVariableRefs:
         )
         with pytest.raises(ValueError, match="no such"):
             validate_variable_refs(cfg)
+
+
+class TestResolveMessagesVariables:
+    def test_single_variable_in_messages(self):
+        messages = [{"role": "user", "content": "Fix {stt.qwen.result}"}]
+        result = resolve_messages_variables(messages, {"stt.qwen": "hello"})
+        assert result == [{"role": "user", "content": "Fix hello"}]
+
+    def test_multiple_messages(self):
+        messages = [
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Fix {stt.qwen.result}"},
+        ]
+        result = resolve_messages_variables(messages, {"stt.qwen": "hello"})
+        assert result[0]["content"] == "You are helpful"
+        assert result[1]["content"] == "Fix hello"
+
+    def test_no_variables(self):
+        messages = [{"role": "user", "content": "plain text"}]
+        result = resolve_messages_variables(messages, {})
+        assert result == [{"role": "user", "content": "plain text"}]
+
+    def test_missing_variable_raises(self):
+        messages = [{"role": "user", "content": "{nonexistent.block.result}"}]
+        with pytest.raises(VariableNotFoundError):
+            _ = resolve_messages_variables(messages, {})
