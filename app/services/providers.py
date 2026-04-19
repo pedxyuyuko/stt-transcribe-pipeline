@@ -62,11 +62,12 @@ class ProviderClient:
         model: str,
         prompt: str | None = None,
         filename: str = "audio.wav",
+        content_type: str = "application/octet-stream",
         timeout: float | None = None,
         model_params: dict[str, Any] | None = None,
     ) -> str:
         files = {
-            "file": (filename, audio_bytes, "application/octet-stream"),
+            "file": (filename, audio_bytes, content_type),
         }
         data = {"model": model, "stream": False}
         if prompt is not None:

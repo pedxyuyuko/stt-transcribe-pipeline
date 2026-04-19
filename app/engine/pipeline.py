@@ -23,6 +23,11 @@ from app.services.providers import (
 from app.services.stt import execute_stt_task
 
 from app.services.llm import execute_chat_task
+from app.services.audio import (
+    build_transcoded_filename,
+    get_audio_mime_type,
+    transcode_audio,
+)
 from loguru import logger
 
 
@@ -113,6 +118,7 @@ async def run_pipeline(
     client: httpx.AsyncClient,
     audio_bytes: bytes,
     audio_filename: str = "audio.wav",
+    audio_input_format: str = "wav",
 ) -> ResultStore:
     results: ResultStore = {}
     last_checkpoint_value: str | None = None
@@ -142,15 +148,29 @@ async def run_pipeline(
             )
 
             if task.type == "transcriptions":
+                stt_audio_bytes = audio_bytes
+                stt_audio_filename = audio_filename
+                stt_content_type = get_audio_mime_type(audio_input_format)
+                if task.audio_force_transcode is not None:
+                    stt_audio_bytes = await transcode_audio(
+                        audio_bytes=audio_bytes,
+                        source_format=audio_input_format,
+                        target_format=task.audio_force_transcode,
+                    )
+                    stt_audio_filename = build_transcoded_filename(
+                        task.audio_force_transcode
+                    )
+                    stt_content_type = get_audio_mime_type(task.audio_force_transcode)
 
                 async def _stt(pc: ProviderClient, mn: str, t: TaskConfig = task):
                     return await execute_stt_task(
                         provider_client=pc,
                         task=t,
-                        audio_bytes=audio_bytes,
+                        audio_bytes=stt_audio_bytes,
                         client=client,
                         model_name=mn,
-                        filename=audio_filename,
+                        filename=stt_audio_filename,
+                        content_type=stt_content_type,
                     )
 
                 coros.append(
@@ -171,6 +191,14 @@ async def run_pipeline(
                     resolved_messages, results
                 )
                 audio = audio_bytes if task.need_audio else None
+                chat_audio_input_format = audio_input_format
+                if task.need_audio and task.audio_force_transcode is not None:
+                    audio = await transcode_audio(
+                        audio_bytes=audio_bytes,
+                        source_format=audio_input_format,
+                        target_format=task.audio_force_transcode,
+                    )
+                    chat_audio_input_format = task.audio_force_transcode
 
                 async def _chat(
                     pc: ProviderClient,
@@ -180,12 +208,14 @@ async def run_pipeline(
                         dict(message) for message in resolved_messages
                     ],
                     aud: bytes | None = audio,
+                    aif: str = chat_audio_input_format,
                 ):
                     return await execute_chat_task(
                         provider_client=pc,
                         task=t,
                         resolved_messages=rmsg,
                         audio_bytes=aud,
+                        audio_input_format=aif,
                         client=client,
                         model_name=mn,
                     )

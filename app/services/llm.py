@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from app.config.schema import TaskConfig
+from app.services.audio import get_audio_mime_type
 from app.services.providers import ProviderClient
 from loguru import logger
 
@@ -17,6 +18,7 @@ async def execute_chat_task(
     task: TaskConfig,
     resolved_messages: list[dict[str, Any]],
     audio_bytes: bytes | None,
+    audio_input_format: str,
     client: httpx.AsyncClient,
     model_name: str,
 ) -> str:
@@ -54,12 +56,14 @@ async def execute_chat_task(
         if task.audio_format == "audio_url":
             audio_content = {
                 "type": "audio_url",
-                "audio_url": {"url": f"data:audio/wav;base64,{b64}"},
+                "audio_url": {
+                    "url": f"data:{get_audio_mime_type(audio_input_format)};base64,{b64}"
+                },
             }
         else:
             audio_content = {
                 "type": "input_audio",
-                "input_audio": {"data": b64, "format": "wav"},
+                "input_audio": {"data": b64, "format": audio_input_format},
             }
         # Append audio to the last user message's content.
         appended_to_user_message = False

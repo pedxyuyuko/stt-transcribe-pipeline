@@ -26,6 +26,7 @@ async def execute_stt_task(
     client: httpx.AsyncClient,
     model_name: str,
     filename: str = "audio.wav",
+    content_type: str = "application/octet-stream",
 ) -> str:
     """
     Execute an STT transcription task.
@@ -60,6 +61,7 @@ async def execute_stt_task(
         timeout=task.timeout,
         model_params=task.model_params,
         filename=filename,
+        content_type=content_type,
     )
     logger.debug("STT task output: {}", result)
     return result
