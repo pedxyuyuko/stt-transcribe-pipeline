@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
+from typing import Any
 
 import httpx
 
 from app.config.schema import PipelineConfig, AppConfig, TaskConfig
-from app.engine.resolver import resolve_variables, ResultStore
+from app.engine.resolver import (
+    resolve_variables,
+    resolve_messages_variables,
+    ResultStore,
+)
 from app.services.providers import (
     ProviderClient,
     resolve_model,
@@ -119,7 +125,7 @@ async def run_pipeline(
             block.tag,
             [t.tag for t in block.tasks],
         )
-        coros: list[object] = []
+        coros: list[Awaitable[str]] = []
         task_keys: list[tuple[str, str]] = []
 
         for task in block.tasks:
@@ -157,22 +163,28 @@ async def run_pipeline(
                 )
 
             elif task.type == "chat":
-                resolved_prompt = task.prompt or ""
-                if resolved_prompt:
-                    resolved_prompt = resolve_variables(resolved_prompt, results)
+                assert task.messages is not None
+                resolved_messages: list[dict[str, str]] = [
+                    {"role": msg.role, "content": msg.content} for msg in task.messages
+                ]
+                resolved_messages = resolve_messages_variables(
+                    resolved_messages, results
+                )
                 audio = audio_bytes if task.need_audio else None
 
                 async def _chat(
                     pc: ProviderClient,
                     mn: str,
                     t: TaskConfig = task,
-                    rp: str = resolved_prompt,
+                    rmsg: list[dict[str, Any]] = [
+                        dict(message) for message in resolved_messages
+                    ],
                     aud: bytes | None = audio,
                 ):
                     return await execute_chat_task(
                         provider_client=pc,
                         task=t,
-                        resolved_prompt=rp,
+                        resolved_messages=rmsg,
                         audio_bytes=aud,
                         client=client,
                         model_name=mn,
@@ -186,12 +198,16 @@ async def run_pipeline(
                         task_path=f"{block.tag}.{task.tag}",
                     )
                 )
-        task_results = await asyncio.gather(*coros, return_exceptions=True)
+        task_results: list[str | BaseException] = await asyncio.gather(
+            *coros, return_exceptions=True
+        )
 
         try:
             for i, result in enumerate(task_results):
                 block_tag, task_tag = task_keys[i]
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
+                    if not isinstance(result, Exception):
+                        raise result
                     raise PipelineError(
                         block_tag=block_tag,
                         task_tag=task_tag,
