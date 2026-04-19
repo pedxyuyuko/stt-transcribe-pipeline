@@ -8,6 +8,9 @@ blocks:
         type: "transcriptions"
         model: "openai/whisper-1"
         need_audio: true
+        # Optional: actually transcode audio before forwarding to the provider.
+        # Requires ffmpeg to be installed in the runtime environment.
+        # audio_force_transcode: "wav"
 
   - tag: "correct"
     name: "LLM Correction"
@@ -17,6 +20,9 @@ blocks:
         model: "smart"
         max_retries: 2
         timeout: 60
+        # Optional: force real audio transcoding before sending to chat/audio models.
+        # Supported values: "wav", "mp3"
+        # audio_force_transcode: "wav"
         messages:
           - role: "system"
             content: |

@@ -309,8 +309,9 @@ What happens:
 | `tag` | string | — | Yes | Unique identifier within the block. |
 | `type` | string | — | Yes | `"transcriptions"` (STT) or `"chat"` (LLM). |
 | `model` | string | — | Yes | Either `"provider_id/model_name"` (direct) or a model group name (fallback chain). |
-| `need_audio` | bool | `false` | No | Send audio to this task. Always true for `transcriptions`. For `chat`, sends audio as base64-encoded WAV in the format specified by `audio_format`. |
+| `need_audio` | bool | `false` | No | Send audio to this task. Always true for `transcriptions`. For `chat`, sends audio in the format specified by `audio_format`. |
 | `audio_format` | string | `"input_audio"` | No | Audio content format for `chat` tasks when `need_audio` is true. `"input_audio"`: OpenAI-native format (`{"type": "input_audio", "input_audio": {"data": "...", "format": "wav"}}`). `"audio_url"`: data URI format for VLLM/VibeVoice-compatible providers (`{"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,..."}}`). Ignored for `transcriptions` tasks. |
+| `audio_force_transcode` | string | `null` | No | Actually re-encode audio to `"wav"` or `"mp3"` with `ffmpeg` before forwarding it to this task. For `chat`, this requires `need_audio: true`. For `transcriptions`, it changes the uploaded bytes, filename, and content type sent to the provider. |
 | `prompt` | string | `null` | No | Prompt text for `transcriptions` tasks. Sent as the `prompt` form field in the STT request. Supports `{block.task.result}` variable substitution. Invalid for `chat` tasks; use `messages` instead. |
 | `messages` | list | `null` | No | Message list for `chat` tasks. Each entry is an object with `role` (e.g. `"system"`, `"user"`) and `content` (the text, supports `{block.task.result}` variable substitution). Sent as the `messages` array in the chat completions request. Required for `chat` tasks and invalid for `transcriptions` tasks. |
 | `max_retries` | int | `0` | No | How many times to retry the entire fallback chain after all models fail. `0` = no retries. |
@@ -319,8 +320,10 @@ What happens:
 
 **Task types:**
 
-- **`transcriptions`** — POSTs audio as multipart form to `{base_url}/audio/transcriptions`. Returns the `text` field from the response. Streaming is disabled (`stream: false`).
-- **`chat`** — POSTs JSON to `{base_url}/chat/completions` with a `messages` array (and optionally base64 audio). The audio content format depends on the `audio_format` setting: `"input_audio"` uses OpenAI's native format, `"audio_url"` uses a data URI format compatible with VLLM/VibeVoice. Audio is attached to the last `user` message; if no `user` message exists, a new trailing `user` message containing only the audio payload is added. Returns `choices[0].message.content`. Streaming is disabled (`stream: false`).
+- **`transcriptions`** — POSTs audio as multipart form to `{base_url}/audio/transcriptions`. If `audio_force_transcode` is set, the server re-encodes the uploaded audio with `ffmpeg` before sending it downstream. Returns the `text` field from the response. Streaming is disabled (`stream: false`).
+- **`chat`** — POSTs JSON to `{base_url}/chat/completions` with a `messages` array (and optionally base64 audio). The audio content format depends on the `audio_format` setting: `"input_audio"` uses OpenAI's native format, `"audio_url"` uses a data URI format compatible with VLLM/VibeVoice. If `audio_force_transcode` is set, audio is re-encoded with `ffmpeg` before embedding and the payload metadata is updated to match. Audio is attached to the last `user` message; if no `user` message exists, a new trailing `user` message containing only the audio payload is added. Returns `choices[0].message.content`. Streaming is disabled (`stream: false`).
+
+> **Runtime requirement**: `audio_force_transcode` requires the `ffmpeg` binary to be available on `PATH`. The provided Docker image installs it automatically.
 
 ### 3.6 Variable Substitution
 

@@ -309,8 +309,9 @@ blocks:
 | `tag` | 字符串 | — | 是 | Task 在 Block 内的唯一标识。 |
 | `type` | 字符串 | — | 是 | `"transcriptions"`（STT）或 `"chat"`（LLM）。 |
 | `model` | 字符串 | — | 是 | `"provider_id/model_name"`（直接引用）或模型组名称（回退链）。 |
-| `need_audio` | 布尔 | `false` | 否 | 是否向此 Task 发送音频。`transcriptions` 类型始终发送。`chat` 类型设为 `true` 时以 `audio_format` 指定的格式发送 base64 WAV 音频。 |
+| `need_audio` | 布尔 | `false` | 否 | 是否向此 Task 发送音频。`transcriptions` 类型始终发送。`chat` 类型设为 `true` 时以 `audio_format` 指定的格式发送音频。 |
 | `audio_format` | 字符串 | `"input_audio"` | 否 | `chat` 类型且 `need_audio` 为 true 时的音频内容格式。`"input_audio"`：OpenAI 原生格式（`{"type": "input_audio", "input_audio": {"data": "...", "format": "wav"}}`）。`"audio_url"`：data URI 格式，适用于 VLLM/VibeVoice 等兼容服务（`{"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,..."}}`）。`transcriptions` 类型忽略此字段。 |
+| `audio_force_transcode` | 字符串 | `null` | 否 | 在发送给该 Task 前，使用 `ffmpeg` 将音频真实重编码为 `"wav"` 或 `"mp3"`。对 `chat` 类型要求 `need_audio: true`；对 `transcriptions` 类型会同时改变发送给 provider 的音频字节、文件名和 content type。 |
 | `prompt` | 字符串 | `null` | 否 | `transcriptions` 类型的提示文本，作为 `prompt` 表单字段发送。支持 `{block.task.result}` 变量替换。对 `chat` 类型无效；请改用 `messages`。 |
 | `messages` | 列表 | `null` | 否 | `chat` 类型的消息列表。每个条目是包含 `role`（如 `"system"`、`"user"`）和 `content`（文本，支持 `{block.task.result}` 变量替换）的对象。作为 `messages` 数组发送到 chat completions 接口。`chat` 类型必须提供此字段；`transcriptions` 类型禁止使用。 |
 | `max_retries` | 整型 | `0` | 否 | 所有模型失败后重试整条回退链的次数。`0` = 不重试。 |
@@ -319,8 +320,10 @@ blocks:
 
 **Task 类型：**
 
-- **`transcriptions`** — 以 multipart 表单形式将音频 POST 到 `{base_url}/audio/transcriptions`，返回响应中的 `text` 字段。流式传输禁用（`stream: false`）。
-- **`chat`** — 以 JSON POST 到 `{base_url}/chat/completions`，发送 `messages` 数组（可选 base64 音频）。音频内容格式取决于 `audio_format` 设置：`"input_audio"` 使用 OpenAI 原生格式，`"audio_url"` 使用 data URI 格式，兼容 VLLM/VibeVoice。音频会附加到最后一个 `user` 消息；如果没有 `user` 消息，则会在末尾补一个仅包含音频内容的 `user` 消息。返回 `choices[0].message.content`。流式传输禁用（`stream: false`）。
+- **`transcriptions`** — 以 multipart 表单形式将音频 POST 到 `{base_url}/audio/transcriptions`。如果设置了 `audio_force_transcode`，服务器会先用 `ffmpeg` 对上传音频做真实重编码，再发送给下游 provider。返回响应中的 `text` 字段。流式传输禁用（`stream: false`）。
+- **`chat`** — 以 JSON POST 到 `{base_url}/chat/completions`，发送 `messages` 数组（可选 base64 音频）。音频内容格式取决于 `audio_format` 设置：`"input_audio"` 使用 OpenAI 原生格式，`"audio_url"` 使用 data URI 格式，兼容 VLLM/VibeVoice。如果设置了 `audio_force_transcode`，服务器会先用 `ffmpeg` 对音频做真实重编码，再把匹配的新格式元数据写入请求。音频会附加到最后一个 `user` 消息；如果没有 `user` 消息，则会在末尾补一个仅包含音频内容的 `user` 消息。返回 `choices[0].message.content`。流式传输禁用（`stream: false`）。
+
+> **运行时要求**：`audio_force_transcode` 依赖系统中的 `ffmpeg` 可执行文件。仓库提供的 Docker 镜像会自动安装它。
 
 ### 3.6 变量替换
 
