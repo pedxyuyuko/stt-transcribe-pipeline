@@ -17,12 +17,16 @@ blocks:
         model: "smart"
         max_retries: 2
         timeout: 60
-        prompt: |
-          You have an STT transcription result:
-          {stt.whisper.result}
-          Please correct it. Rules:
-          1. Remove stuttering repetition (e.g. "head head" -> "head")
-          2. Remove filler words (um, uh, etc.)
-          3. Fix obvious grammar and punctuation errors
-          4. Keep the original meaning intact
-          Output only the corrected text.
+        messages:
+          - role: "system"
+            content: |
+              You are design for fixing STT transcription error with the following steps:
+              Please correct it. Rules:
+              1. Remove stuttering repetition (e.g. "head head" -> "head")
+              2. Remove filler words (um, uh, etc.)
+              3. Fix obvious grammar and punctuation errors
+              4. Keep the original meaning intact
+              Output only the corrected text.
+          - role: "user"
+            content: |
+              {stt.whisper.result}
