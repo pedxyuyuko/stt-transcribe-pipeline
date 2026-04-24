@@ -1,5 +1,11 @@
+import asyncio
+import json
+from typing import cast
+from collections import deque
+
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
+import httpx
 
 from app.config.schema import (
     AppConfig,
@@ -7,11 +13,108 @@ from app.config.schema import (
     MessageConfig,
     PipelineConfig,
     ProviderConfig,
+    RecordConfig,
     TaskConfig,
 )
-from app.engine.pipeline import run_pipeline, get_pipeline_output, PipelineError
-from app.engine.resolver import VariableNotFoundError
+from app.engine.pipeline import (
+    run_pipeline,
+    get_pipeline_output,
+    PipelineError,
+    PipelineFallback,
+)
+from app.history_store import SessionHistoryStore
+from app.engine.resolver import (
+    HistoryEntryNotFoundError,
+    SessionRequiredError,
+    VariableNotFoundError,
+)
 from app.services.providers import ProviderClient
+
+
+class _SimpleHTTPXMock:
+    def __init__(self) -> None:
+        self._responses: deque[object] = deque()
+        self._requests: list[httpx.Request] = []
+
+    def add_response(
+        self,
+        *,
+        url: str,
+        method: str,
+        json: object | None = None,
+        status_code: int = 200,
+    ) -> None:
+        self._responses.append(
+            {
+                "kind": "response",
+                "url": url,
+                "method": method.upper(),
+                "json": json,
+                "status_code": status_code,
+            }
+        )
+
+    def add_exception(self, exception: Exception, *, url: str, method: str) -> None:
+        self._responses.append(
+            {
+                "kind": "exception",
+                "url": url,
+                "method": method.upper(),
+                "exception": exception,
+            }
+        )
+
+    def get_requests(self) -> list[httpx.Request]:
+        return list(self._requests)
+
+    def _next_entry(self, method: str, url: str) -> dict[str, object]:
+        if not self._responses:
+            raise AssertionError(f"Unexpected HTTPX request with no mock left: {method} {url}")
+
+        entry = self._responses.popleft()
+        assert isinstance(entry, dict)
+        expected_method = entry["method"]
+        expected_url = entry["url"]
+        if expected_method != method.upper() or expected_url != url:
+            raise AssertionError(
+                "Unexpected HTTPX request order: "
+                + f"got {method} {url}, expected {expected_method} {expected_url}"
+            )
+        return entry
+
+
+@pytest.fixture
+def httpx_mock(monkeypatch):
+    mock = _SimpleHTTPXMock()
+
+    async def _mocked_post(self, url, *args, **kwargs):
+        request_kwargs: dict[str, object] = {}
+        if "headers" in kwargs and kwargs["headers"] is not None:
+            request_kwargs["headers"] = kwargs["headers"]
+
+        if "json" in kwargs and kwargs["json"] is not None:
+            request_kwargs["content"] = json.dumps(kwargs["json"]).encode("utf-8")
+        if "data" in kwargs and kwargs["data"] is not None:
+            request_kwargs["data"] = kwargs["data"]
+        if "files" in kwargs and kwargs["files"] is not None:
+            request_kwargs["files"] = kwargs["files"]
+
+        request = self.build_request("POST", url, **request_kwargs)
+        mock._requests.append(request)
+        entry = mock._next_entry(request.method, str(request.url))
+        if entry["kind"] == "exception":
+            exception = entry["exception"]
+            assert isinstance(exception, Exception)
+            raise exception
+        status_code = entry["status_code"]
+        payload = entry["json"]
+        assert isinstance(status_code, int)
+        return httpx.Response(status_code=status_code, json=payload, request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _mocked_post)
+    yield mock
+    if mock._responses:
+        raise AssertionError(f"Unused HTTPX mock entries remain: {len(mock._responses)}")
 
 
 def _extract_input_audio_format(messages: list[dict[str, object]]) -> str:
@@ -226,8 +329,18 @@ async def test_chat_task_without_messages_uses_audio_only_payload(
 
     assert results["correct.final"] == "audio only ok"
     request = httpx_mock.get_requests()[0]
-    payload = request.read().decode("utf-8")
-    assert '"messages":[{"role":"user","content":[{"type":"input_audio"' in payload
+    payload = json.loads(request.read().decode("utf-8"))
+    assert payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "ZmFrZSBhdWRpbw==", "format": "wav"},
+                }
+            ],
+        }
+    ]
 
 
 def test_get_pipeline_output():
@@ -522,6 +635,72 @@ async def test_run_pipeline_transcodes_chat_audio_when_requested(
 
 
 @pytest.mark.asyncio
+async def test_run_pipeline_binds_distinct_stt_audio_payloads_per_task(
+    app_config, monkeypatch
+):
+    import httpx
+    import app.engine.pipeline as pipeline_module
+
+    pipeline = PipelineConfig(
+        output="{stt.raw.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                tasks=[
+                    TaskConfig(
+                        tag="raw",
+                        type="transcriptions",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                    ),
+                    TaskConfig(
+                        tag="mp3_copy",
+                        type="transcriptions",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                        audio_force_transcode="mp3",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    transcode_mock = AsyncMock(return_value=b"transcoded mp3 bytes")
+    execute_stt_mock = AsyncMock(side_effect=["raw text", "mp3 text"])
+    monkeypatch.setattr(pipeline_module, "transcode_audio", transcode_mock)
+    monkeypatch.setattr(pipeline_module, "execute_stt_task", execute_stt_mock)
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config,
+            client=client,
+            audio_bytes=b"source bytes",
+            audio_filename="clip.wav",
+            audio_input_format="wav",
+        )
+
+    assert results == {"stt.raw": "raw text", "stt.mp3_copy": "mp3 text"}
+    transcode_mock.assert_awaited_once_with(
+        audio_bytes=b"source bytes",
+        source_format="wav",
+        target_format="mp3",
+    )
+    assert execute_stt_mock.await_count == 2
+
+    first_call = execute_stt_mock.await_args_list[0].kwargs
+    second_call = execute_stt_mock.await_args_list[1].kwargs
+    assert first_call["task"].tag == "raw"
+    assert first_call["audio_bytes"] == b"source bytes"
+    assert first_call["filename"] == "clip.wav"
+    assert first_call["content_type"] == "audio/wav"
+    assert second_call["task"].tag == "mp3_copy"
+    assert second_call["audio_bytes"] == b"transcoded mp3 bytes"
+    assert second_call["filename"] == "audio.mp3"
+    assert second_call["content_type"] == "audio/mpeg"
+
+
+@pytest.mark.asyncio
 async def test_run_pipeline_transcodes_stt_audio_when_requested(
     simple_pipeline_config, app_config, httpx_mock, monkeypatch
 ):
@@ -560,3 +739,1153 @@ async def test_run_pipeline_transcodes_stt_audio_when_requested(
     assert 'filename="audio.mp3"' in body
     assert "audio/mpeg" in body
     assert "multipart/form-data" in content_type
+
+
+@pytest.mark.asyncio
+async def test_history_store_read_append_truncate():
+    store = SessionHistoryStore(max_history_length=3)
+
+    assert await store.read("session-a", "block.task") == []
+
+    assert await store.append("session-a", "block.task", "first") == ["first"]
+    assert await store.append("session-a", "block.task", "second") == [
+        "second",
+        "first",
+    ]
+    assert await store.append("session-a", "block.task", "third") == [
+        "third",
+        "second",
+        "first",
+    ]
+    assert await store.append("session-a", "block.task", "fourth") == [
+        "fourth",
+        "third",
+        "second",
+    ]
+
+    assert await store.read("session-a", "block.task") == [
+        "fourth",
+        "third",
+        "second",
+    ]
+    assert await store.truncate("session-a", "block.task", max_history_length=2) == [
+        "fourth",
+        "third",
+    ]
+    assert await store.read("session-a", "block.task") == ["fourth", "third"]
+
+
+@pytest.mark.asyncio
+async def test_history_store_logs_per_key_state(monkeypatch):
+    store = SessionHistoryStore(max_history_length=3)
+
+    import app.history_store as history_store_module
+
+    debug_mock = Mock()
+
+    def _debug(*args, **kwargs):
+        debug_mock(*args, **kwargs)
+
+    monkeypatch.setattr(history_store_module.logger, "debug", _debug)
+
+    assert await store.read("session-a", "block.task") == []
+    assert await store.append("session-a", "block.task", "first") == ["first"]
+    assert await store.append("session-a", "block.task", "second") == ["second", "first"]
+    assert await store.truncate("session-a", "block.task", max_history_length=1) == ["second"]
+
+    calls = debug_mock.call_args_list
+    assert len(calls) == 4
+
+    assert calls[0].args == (
+        "Session history read | user_session_id={} | task_path={} | retained_history=[] | retained_length=0",
+        "session-a",
+        "block.task",
+    )
+    assert calls[1].args == (
+        "Session history append | user_session_id={} | task_path={} | retained_history={} | retained_length={}",
+        "session-a",
+        "block.task",
+        ["first"],
+        1,
+    )
+    assert calls[2].args == (
+        "Session history append | user_session_id={} | task_path={} | retained_history={} | retained_length={}",
+        "session-a",
+        "block.task",
+        ["second", "first"],
+        2,
+    )
+    assert calls[3].args == (
+        "Session history truncate | user_session_id={} | task_path={} | retained_history={} | retained_length={}",
+        "session-a",
+        "block.task",
+        ["second"],
+        1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_history_store_max_history_length_keeps_newest_results():
+    store = SessionHistoryStore(max_history_length=2)
+
+    _ = await store.append("session-a", "block.task", "one")
+    _ = await store.append("session-a", "block.task", "two")
+    _ = await store.append("session-a", "block.task", "three")
+
+    assert await store.read("session-a", "block.task") == ["three", "two"]
+
+
+@pytest.mark.asyncio
+async def test_history_store_session_isolation():
+    store = SessionHistoryStore(max_history_length=3)
+
+    _ = await store.append("session-a", "block.task", "a-1")
+    _ = await store.append("session-b", "block.task", "b-1")
+    _ = await store.append("session-a", "other.task", "a-other")
+
+    assert await store.read("session-a", "block.task") == ["a-1"]
+    assert await store.read("session-b", "block.task") == ["b-1"]
+    assert await store.read("session-a", "other.task") == ["a-other"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_history_store_appends_preserve_bounded_length():
+    store = SessionHistoryStore(max_history_length=5)
+
+    async def _append_value(index: int) -> None:
+        _ = await store.append("session-a", "block.task", f"value-{index}")
+
+    await asyncio.gather(*[_append_value(index) for index in range(20)])
+
+    history = await store.read("session-a", "block.task")
+    assert len(history) == 5
+    assert history == [f"value-{index}" for index in range(19, 14, -1)]
+
+
+@pytest.mark.asyncio
+async def test_main_lifespan_attaches_session_history_store():
+    from main import app
+
+    async with app.router.lifespan_context(app):
+        history_store = cast(SessionHistoryStore, app.state.session_history_store)
+        assert isinstance(history_store, SessionHistoryStore)
+        assert await history_store.read("session-a", "block.task") == []
+
+
+@pytest.mark.asyncio
+async def test_chat_messages_require_session_skips_only_gated_messages(
+    app_config_with_group, monkeypatch
+):
+    from app.services.providers import ProviderClient
+    import httpx
+    import app.engine.pipeline as pipeline_module
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        messages=[
+                            MessageConfig(role="system", content="always keep"),
+                            MessageConfig(
+                                role="user",
+                                content="session-only",
+                                require_session=True,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    provider_client = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="test",
+        provider_id="openai",
+    )
+    provider_client.post_chat = AsyncMock(return_value="ok")  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setattr(
+        pipeline_module,
+        "resolve_model",
+        lambda model, config: [(provider_client, "gpt-4o")],
+    )
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            session_history_store=SessionHistoryStore(),
+        )
+
+    assert results["correct.final"] == "ok"
+    assert provider_client.post_chat.await_args is not None
+    sent_messages = provider_client.post_chat.await_args.kwargs["messages"]
+    assert sent_messages == [{"role": "system", "content": "always keep"}]
+
+
+@pytest.mark.asyncio
+async def test_chat_messages_require_session_passes_when_session_exists(
+    app_config_with_group, monkeypatch
+):
+    from app.services.providers import ProviderClient
+    import httpx
+    import app.engine.pipeline as pipeline_module
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        messages=[
+                            MessageConfig(role="system", content="always keep"),
+                            MessageConfig(
+                                role="user",
+                                content="session-only",
+                                require_session=True,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    provider_client = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="test",
+        provider_id="openai",
+    )
+    provider_client.post_chat = AsyncMock(return_value="ok")  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setattr(
+        pipeline_module,
+        "resolve_model",
+        lambda model, config: [(provider_client, "gpt-4o")],
+    )
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=SessionHistoryStore(),
+        )
+
+    assert results["correct.final"] == "ok"
+    assert provider_client.post_chat.await_args is not None
+    sent_messages = provider_client.post_chat.await_args.kwargs["messages"]
+    assert sent_messages == [
+        {"role": "system", "content": "always keep"},
+        {"role": "user", "content": "session-only"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_missing_history_skip_removes_only_that_message(
+    app_config_with_group, monkeypatch
+):
+    from app.services.providers import ProviderClient
+    import httpx
+    import app.engine.pipeline as pipeline_module
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                tasks=[
+                    TaskConfig(
+                        tag="qwen",
+                        type="transcriptions",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                    )
+                ],
+            ),
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        messages=[
+                            MessageConfig(role="system", content="base {stt.qwen.result}"),
+                            MessageConfig(
+                                role="user",
+                                content="history {stt.qwen.history[0]}",
+                                missing_strategy="skip",
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+    provider_client = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="test",
+        provider_id="openai",
+    )
+    provider_client.post_chat = AsyncMock(return_value="ok")  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setattr(
+        pipeline_module,
+        "resolve_model",
+        lambda model, config: [
+            (provider_client, "whisper-1")
+            if model == "openai/gpt-4o"
+            else (provider_client, "gpt-4o")
+        ],
+    )
+
+    history_store = SessionHistoryStore()
+    provider_client.post_transcription = AsyncMock(return_value="hello")  # pyright: ignore[reportAttributeAccessIssue]
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=history_store,
+        )
+
+    assert results["correct.final"] == "ok"
+    assert provider_client.post_chat.await_args is not None
+    sent_messages = provider_client.post_chat.await_args.kwargs["messages"]
+    assert sent_messages == [{"role": "system", "content": "base hello"}]
+
+
+@pytest.mark.asyncio
+async def test_missing_history_empty_substitutes_empty_string(
+    app_config_with_group, monkeypatch
+):
+    from app.services.providers import ProviderClient
+    import httpx
+    import app.engine.pipeline as pipeline_module
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                tasks=[
+                    TaskConfig(
+                        tag="qwen",
+                        type="transcriptions",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                    )
+                ],
+            ),
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        messages=[
+                            MessageConfig(
+                                role="user",
+                                content="before {stt.qwen.history[0]} after",
+                                missing_strategy="empty",
+                            )
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+    provider_client = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="test",
+        provider_id="openai",
+    )
+    provider_client.post_chat = AsyncMock(return_value="ok")  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setattr(
+        pipeline_module,
+        "resolve_model",
+        lambda model, config: [
+            (provider_client, "whisper-1")
+            if model == "openai/gpt-4o"
+            else (provider_client, "gpt-4o")
+        ],
+    )
+
+    provider_client.post_transcription = AsyncMock(return_value="hello")  # pyright: ignore[reportAttributeAccessIssue]
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=SessionHistoryStore(),
+        )
+
+    assert results["correct.final"] == "ok"
+    assert provider_client.post_chat.await_args is not None
+    sent_messages = provider_client.post_chat.await_args.kwargs["messages"]
+    assert sent_messages == [{"role": "user", "content": "before  after"}]
+
+
+@pytest.mark.asyncio
+async def test_missing_history_without_strategy_raises_pipeline_error(
+    app_config_with_group, monkeypatch
+):
+    from app.services.providers import ProviderClient
+    import httpx
+    import app.engine.pipeline as pipeline_module
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                tasks=[
+                    TaskConfig(
+                        tag="qwen",
+                        type="transcriptions",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                    )
+                ],
+            ),
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        messages=[
+                            MessageConfig(
+                                role="user",
+                                content="history {stt.qwen.history[0]}",
+                            )
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+
+    provider_client = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="test",
+        provider_id="openai",
+    )
+    provider_client.post_transcription = AsyncMock(return_value="hello")  # pyright: ignore[reportAttributeAccessIssue]
+    provider_client.post_chat = AsyncMock(return_value="ok")  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setattr(
+        pipeline_module,
+        "resolve_model",
+        lambda model, config: [
+            (provider_client, "whisper-1")
+            if model == "openai/gpt-4o"
+            else (provider_client, "gpt-4o")
+        ],
+    )
+
+    with pytest.raises(PipelineError) as exc_info:
+        async with httpx.AsyncClient() as client:
+            await run_pipeline(
+                preset=pipeline,
+                models_config=app_config_with_group,
+                client=client,
+                audio_bytes=b"fake audio",
+                user_session_id="session-a",
+                session_history_store=SessionHistoryStore(),
+            )
+
+    assert isinstance(exc_info.value.original_error, HistoryEntryNotFoundError)
+
+
+@pytest.mark.asyncio
+async def test_missing_history_skip_without_session_removes_only_that_message(
+    app_config_with_group, monkeypatch
+):
+    from app.services.providers import ProviderClient
+    import httpx
+    import app.engine.pipeline as pipeline_module
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                tasks=[
+                    TaskConfig(
+                        tag="qwen",
+                        type="transcriptions",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                    )
+                ],
+            ),
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        messages=[
+                            MessageConfig(role="system", content="keep me"),
+                            MessageConfig(
+                                role="user",
+                                content="history {stt.qwen.history[0]}",
+                                missing_strategy="skip",
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+    provider_client = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="test",
+        provider_id="openai",
+    )
+    provider_client.post_transcription = AsyncMock(return_value="hello")  # pyright: ignore[reportAttributeAccessIssue]
+    provider_client.post_chat = AsyncMock(return_value="ok")  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setattr(
+        pipeline_module,
+        "resolve_model",
+        lambda model, config: [
+            (provider_client, "whisper-1")
+            if model == "openai/gpt-4o"
+            else (provider_client, "gpt-4o")
+        ],
+    )
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            session_history_store=SessionHistoryStore(),
+        )
+
+    assert results["correct.final"] == "ok"
+    assert provider_client.post_chat.await_args is not None
+    sent_messages = provider_client.post_chat.await_args.kwargs["messages"]
+    assert sent_messages == [{"role": "system", "content": "keep me"}]
+
+
+@pytest.mark.asyncio
+async def test_missing_history_empty_without_session_substitutes_empty_string(
+    app_config_with_group, monkeypatch
+):
+    from app.services.providers import ProviderClient
+    import httpx
+    import app.engine.pipeline as pipeline_module
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                tasks=[
+                    TaskConfig(
+                        tag="qwen",
+                        type="transcriptions",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                    )
+                ],
+            ),
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        messages=[
+                            MessageConfig(
+                                role="user",
+                                content="history {stt.qwen.history[0]}",
+                                missing_strategy="empty",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+    provider_client = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="test",
+        provider_id="openai",
+    )
+    provider_client.post_transcription = AsyncMock(return_value="hello")  # pyright: ignore[reportAttributeAccessIssue]
+    provider_client.post_chat = AsyncMock(return_value="ok")  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setattr(
+        pipeline_module,
+        "resolve_model",
+        lambda model, config: [
+            (provider_client, "whisper-1")
+            if model == "openai/gpt-4o"
+            else (provider_client, "gpt-4o")
+        ],
+    )
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            session_history_store=SessionHistoryStore(),
+        )
+
+    assert results["correct.final"] == "ok"
+    assert provider_client.post_chat.await_args is not None
+    sent_messages = provider_client.post_chat.await_args.kwargs["messages"]
+    assert sent_messages == [{"role": "user", "content": "history "}]
+
+
+@pytest.mark.asyncio
+async def test_chat_messages_all_filtered_without_audio_fails_clearly(
+    app_config_with_group,
+):
+    import httpx
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        need_audio=False,
+                        messages=[
+                            MessageConfig(
+                                role="user",
+                                content="session-only",
+                                require_session=True,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(PipelineError) as exc_info:
+        async with httpx.AsyncClient() as client:
+            await run_pipeline(
+                preset=pipeline,
+                models_config=app_config_with_group,
+                client=client,
+                audio_bytes=b"fake audio",
+                session_history_store=SessionHistoryStore(),
+            )
+
+    assert exc_info.value.block_tag == "correct"
+    assert exc_info.value.task_tag == "final"
+    assert "has no messages left after session-aware filtering" in str(
+        exc_info.value.original_error
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_messages_all_filtered_with_audio_preserves_audio_only_behavior(
+    app_config_with_group, httpx_mock
+):
+    import httpx
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="smart",
+                        need_audio=True,
+                        messages=[
+                            MessageConfig(
+                                role="user",
+                                content="session-only",
+                                require_session=True,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "audio only ok"}}]},
+        method="POST",
+    )
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            session_history_store=SessionHistoryStore(),
+        )
+
+    assert results["correct.final"] == "audio only ok"
+    request = httpx_mock.get_requests()[0]
+    payload = json.loads(request.read().decode("utf-8"))
+    assert payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "ZmFrZSBhdWRpbw==", "format": "wav"},
+                }
+            ],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_records_history_only_after_success(
+    app_config_with_group, httpx_mock
+):
+    import httpx
+
+    history_store = SessionHistoryStore()
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        messages=[MessageConfig(role="user", content="hello")],
+                        record=RecordConfig(enable=True, max_history_length=2),
+                    )
+                ],
+            )
+        ],
+    )
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "first"}}]},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "second"}}]},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "third"}}]},
+        method="POST",
+    )
+
+    async with httpx.AsyncClient() as client:
+        await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=history_store,
+        )
+        await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=history_store,
+        )
+        await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=history_store,
+        )
+
+    assert await history_store.read("session-a", "correct.final") == ["third", "second"]
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_history_indexes_use_newest_and_oldest_retained_entries(
+    app_config_with_group, httpx_mock
+):
+    import httpx
+
+    history_store = SessionHistoryStore()
+    record_pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        messages=[MessageConfig(role="user", content="hello")],
+                        record=RecordConfig(enable=True, max_history_length=2),
+                    )
+                ],
+            )
+        ],
+    )
+    read_pipeline = PipelineConfig(
+        output="{reader.pick.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        messages=[MessageConfig(role="user", content="current run")],
+                    )
+                ],
+            ),
+            BlockConfig(
+                tag="reader",
+                tasks=[
+                    TaskConfig(
+                        tag="pick",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        messages=[
+                            MessageConfig(
+                                role="user",
+                                content="newest {correct.final.history[0]} oldest {correct.final.history[-1]}",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "first"}}]},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "second"}}]},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "third"}}]},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "resolved indexes"}}]},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "reader consumed history"}}]},
+        method="POST",
+    )
+
+    async with httpx.AsyncClient() as client:
+        await run_pipeline(
+            preset=record_pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=history_store,
+        )
+        await run_pipeline(
+            preset=record_pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=history_store,
+        )
+        await run_pipeline(
+            preset=record_pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=history_store,
+        )
+        results = await run_pipeline(
+            preset=read_pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            user_session_id="session-a",
+            session_history_store=history_store,
+        )
+
+    assert results["correct.final"] == "resolved indexes"
+    assert results["reader.pick"] == "reader consumed history"
+    assert await history_store.read("session-a", "correct.final") == ["third", "second"]
+    request = httpx_mock.get_requests()[-1]
+    payload = json.loads(request.read().decode("utf-8"))
+    assert payload["messages"] == [
+        {"role": "user", "content": "newest third oldest second"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_does_not_record_without_user_session(
+    app_config_with_group, httpx_mock
+):
+    import httpx
+
+    history_store = SessionHistoryStore()
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        messages=[MessageConfig(role="user", content="hello")],
+                        record=RecordConfig(enable=True, max_history_length=2),
+                    )
+                ],
+            )
+        ],
+    )
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "ok"}}]},
+        method="POST",
+    )
+
+    async with httpx.AsyncClient() as client:
+        await run_pipeline(
+            preset=pipeline,
+            models_config=app_config_with_group,
+            client=client,
+            audio_bytes=b"fake audio",
+            session_history_store=history_store,
+        )
+
+    assert await history_store.read("session-a", "correct.final") == []
+
+
+@pytest.mark.asyncio
+async def test_failed_task_does_not_record_history(app_config_with_group, httpx_mock):
+    import httpx
+
+    history_store = SessionHistoryStore()
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        messages=[MessageConfig(role="user", content="hello")],
+                        record=RecordConfig(enable=True, max_history_length=2),
+                    )
+                ],
+            )
+        ],
+    )
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        status_code=500,
+        json={"error": {"message": "boom"}},
+        method="POST",
+    )
+
+    with pytest.raises(PipelineError):
+        async with httpx.AsyncClient() as client:
+            await run_pipeline(
+                preset=pipeline,
+                models_config=app_config_with_group,
+                client=client,
+                audio_bytes=b"fake audio",
+                user_session_id="session-a",
+                session_history_store=history_store,
+            )
+
+    assert await history_store.read("session-a", "correct.final") == []
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_fallback_does_not_record_failed_later_task(
+    app_config_with_group, httpx_mock
+):
+    import httpx
+
+    history_store = SessionHistoryStore()
+    pipeline = PipelineConfig(
+        output="{stt.qwen.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                checkpoint="qwen",
+                tasks=[
+                    TaskConfig(
+                        tag="qwen",
+                        type="transcriptions",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                        record=RecordConfig(enable=True, max_history_length=2),
+                    )
+                ],
+            ),
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        messages=[MessageConfig(role="user", content="hello")],
+                        record=RecordConfig(enable=True, max_history_length=2),
+                    )
+                ],
+            ),
+        ],
+    )
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/audio/transcriptions",
+        json={"text": "checkpoint text"},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        status_code=500,
+        json={"error": {"message": "boom"}},
+        method="POST",
+    )
+
+    with pytest.raises(PipelineFallback) as exc_info:
+        async with httpx.AsyncClient() as client:
+            await run_pipeline(
+                preset=pipeline,
+                models_config=app_config_with_group,
+                client=client,
+                audio_bytes=b"fake audio",
+                user_session_id="session-a",
+                session_history_store=history_store,
+            )
+
+    assert exc_info.value.fallback_value == "checkpoint text"
+    assert await history_store.read("session-a", "stt.qwen") == ["checkpoint text"]
+    assert await history_store.read("session-a", "correct.final") == []
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_fallback_preserves_prior_history_without_appending_failed_value(
+    app_config_with_group, httpx_mock
+):
+    import httpx
+
+    history_store = SessionHistoryStore()
+    await history_store.append("session-a", "correct.final", "prior good result")
+
+    pipeline = PipelineConfig(
+        output="{stt.qwen.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                checkpoint="qwen",
+                tasks=[
+                    TaskConfig(
+                        tag="qwen",
+                        type="transcriptions",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                        record=RecordConfig(enable=True, max_history_length=2),
+                    )
+                ],
+            ),
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        messages=[MessageConfig(role="user", content="hello")],
+                        record=RecordConfig(enable=True, max_history_length=2),
+                    )
+                ],
+            ),
+        ],
+    )
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/audio/transcriptions",
+        json={"text": "checkpoint text"},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        status_code=500,
+        json={"error": {"message": "boom"}},
+        method="POST",
+    )
+
+    with pytest.raises(PipelineFallback) as exc_info:
+        async with httpx.AsyncClient() as client:
+            await run_pipeline(
+                preset=pipeline,
+                models_config=app_config_with_group,
+                client=client,
+                audio_bytes=b"fake audio",
+                user_session_id="session-a",
+                session_history_store=history_store,
+            )
+
+    assert exc_info.value.fallback_value == "checkpoint text"
+    assert await history_store.read("session-a", "stt.qwen") == ["checkpoint text"]
+    assert await history_store.read("session-a", "correct.final") == [
+        "prior good result"
+    ]

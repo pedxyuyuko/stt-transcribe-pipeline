@@ -1,13 +1,18 @@
 import pytest
 from types import SimpleNamespace
 
+from app.config.schema import BlockConfig, MessageConfig, TaskConfig
+from app.history_store import SessionHistoryStore
 from app.engine.resolver import (
+    HistoryEntryNotFoundError,
+    SessionRequiredError,
     resolve_variables,
+    resolve_runtime_variables,
     resolve_messages_variables,
+    resolve_runtime_messages_variables,
     VariableNotFoundError,
     validate_variable_refs,
 )
-from app.config.schema import BlockConfig, MessageConfig, TaskConfig
 
 
 class TestResolveVariables:
@@ -43,6 +48,69 @@ class TestResolveVariables:
             "text {stt.qwen.result} more text", {"stt.qwen": "hello"}
         )
         assert result == "text hello more text"
+
+
+class TestResolveRuntimeVariables:
+    @pytest.mark.asyncio
+    async def test_history_newest_and_oldest_indexes(self):
+        store = SessionHistoryStore(max_history_length=5)
+        await store.append("session-1", "stt.qwen", "oldest")
+        await store.append("session-1", "stt.qwen", "middle")
+        await store.append("session-1", "stt.qwen", "newest")
+
+        newest = await resolve_runtime_variables(
+            "{stt.qwen.history[0]}",
+            {},
+            session_history_store=store,
+            user_session_id="session-1",
+        )
+        oldest = await resolve_runtime_variables(
+            "{stt.qwen.history[-1]}",
+            {},
+            session_history_store=store,
+            user_session_id="session-1",
+        )
+
+        assert newest == "newest"
+        assert oldest == "oldest"
+
+    @pytest.mark.asyncio
+    async def test_result_and_history_coexist(self):
+        store = SessionHistoryStore(max_history_length=5)
+        await store.append("session-1", "stt.qwen", "prior")
+
+        result = await resolve_runtime_variables(
+            "now {stt.qwen.result} then {stt.qwen.history[0]}",
+            {"stt.qwen": "current"},
+            session_history_store=store,
+            user_session_id="session-1",
+        )
+
+        assert result == "now current then prior"
+
+    @pytest.mark.asyncio
+    async def test_missing_session_raises(self):
+        store = SessionHistoryStore(max_history_length=5)
+
+        with pytest.raises(SessionRequiredError, match="Session required"):
+            await resolve_runtime_variables(
+                "{stt.qwen.history[-1]}",
+                {},
+                session_history_store=store,
+            )
+
+    @pytest.mark.asyncio
+    async def test_missing_history_entry_raises(self):
+        store = SessionHistoryStore(max_history_length=5)
+        await store.append("session-1", "stt.qwen", "only")
+
+        with pytest.raises(HistoryEntryNotFoundError, match="History entry not found"):
+            await resolve_runtime_variables(
+                "{stt.qwen.history[1]}",
+                {},
+                session_history_store=store,
+                user_session_id="session-1",
+            )
 
 
 class TestValidateVariableRefs:
@@ -147,6 +215,123 @@ class TestValidateVariableRefs:
         with pytest.raises(ValueError, match="no such"):
             validate_variable_refs(cfg)
 
+    def test_history_reference_to_previous_block_is_valid(self):
+        from app.config.schema import PipelineConfig
+
+        cfg = PipelineConfig(
+            output="{correct.final.result}",
+            blocks=[
+                BlockConfig(
+                    tag="stt",
+                    tasks=[
+                        TaskConfig(
+                            tag="qwen",
+                            type="transcriptions",
+                            model="local/qwen",
+                            need_audio=True,
+                        )
+                    ],
+                ),
+                BlockConfig(
+                    tag="correct",
+                    tasks=[
+                        TaskConfig(
+                            tag="final",
+                            type="chat",
+                            model="smart",
+                            messages=[
+                                MessageConfig(
+                                    role="user",
+                                    content="Use {stt.qwen.history[-1]}",
+                                )
+                            ],
+                        )
+                    ],
+                ),
+            ],
+        )
+
+        validate_variable_refs(cfg)
+
+    def test_history_forward_reference_caught(self):
+        block_b = BlockConfig(
+            tag="b",
+            tasks=[
+                TaskConfig(
+                    tag="y",
+                    type="chat",
+                    model="smart",
+                    messages=[
+                        MessageConfig(role="user", content="Fix {a.x.history[-1]}")
+                    ],
+                )
+            ],
+        )
+        block_a = BlockConfig(
+            tag="a",
+            tasks=[
+                TaskConfig(
+                    tag="x", type="transcriptions", model="local/qwen", need_audio=True
+                )
+            ],
+        )
+        cfg = SimpleNamespace(
+            output="{b.y.result}",
+            blocks=[block_b, block_a],
+        )
+        with pytest.raises(ValueError, match="[Rr]eferences|[Ee]arlier"):
+            validate_variable_refs(cfg)
+
+    def test_history_same_block_reference_caught(self):
+        cfg = SimpleNamespace(
+            output="{b.y.result}",
+            blocks=[
+                BlockConfig(
+                    tag="b",
+                    tasks=[
+                        TaskConfig(
+                            tag="x",
+                            type="transcriptions",
+                            model="local/qwen",
+                            need_audio=True,
+                        ),
+                        TaskConfig(
+                            tag="y",
+                            type="chat",
+                            model="smart",
+                            messages=[
+                                MessageConfig(
+                                    role="user",
+                                    content="Fix {b.x.history[0]}",
+                                )
+                            ],
+                        ),
+                    ],
+                )
+            ],
+        )
+        with pytest.raises(ValueError, match="[Rr]eferences|[Ee]arlier"):
+            validate_variable_refs(cfg)
+
+    def test_output_history_reference_is_rejected(self):
+        block_a = BlockConfig(
+            tag="a",
+            tasks=[
+                TaskConfig(
+                    tag="x",
+                    type="transcriptions",
+                    model="local/qwen",
+                    need_audio=True,
+                )
+            ],
+        )
+        cfg = SimpleNamespace(
+            output="{a.x.history[-1]}",
+            blocks=[block_a],
+        )
+        with pytest.raises(ValueError, match="[Oo]utput"):
+            validate_variable_refs(cfg)
+
 
 class TestResolveMessagesVariables:
     def test_single_variable_in_messages(self):
@@ -172,3 +357,19 @@ class TestResolveMessagesVariables:
         messages = [{"role": "user", "content": "{nonexistent.block.result}"}]
         with pytest.raises(VariableNotFoundError):
             _ = resolve_messages_variables(messages, {})
+
+
+class TestResolveRuntimeMessagesVariables:
+    @pytest.mark.asyncio
+    async def test_history_in_messages(self):
+        store = SessionHistoryStore(max_history_length=5)
+        await store.append("session-1", "stt.qwen", "latest")
+
+        result = await resolve_runtime_messages_variables(
+            [{"role": "user", "content": "Fix {stt.qwen.history[0]}"}],
+            {},
+            session_history_store=store,
+            user_session_id="session-1",
+        )
+
+        assert result == [{"role": "user", "content": "Fix latest"}]
