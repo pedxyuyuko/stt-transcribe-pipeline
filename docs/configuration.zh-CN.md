@@ -140,6 +140,7 @@ host: "0.0.0.0"
 port: 8000
 api_key: "your-api-key"
 default_preset: "default"
+session_idle_timeout_minutes: 10
 
 providers:
   local-whisper:
@@ -167,6 +168,7 @@ log_level: "INFO"
 | `port` | 整型 | `8000` | 否 | 服务器端口。 |
 | `api_key` | 字符串 | — | 是 | 用于认证传入请求的 API 密钥。仅允许字母、数字、下划线和连字符（`^[a-zA-Z0-9_-]+$`）。 |
 | `default_preset` | 字符串 | — | 是 | 默认流水线预设名称。必须与 `config/presets/` 下某个 `.yaml` 文件名（不含扩展名）匹配。 |
+| `session_idle_timeout_minutes` | 整型 | `null` | 否 | session history 的空闲过期时间，单位为分钟。如果某个 `preset_id/session_id` 对应的 session 在这段时间内没有新的读写活动，则下一次请求到来时会先清空该 session 在内存中的全部保留 history，并按“没有旧上下文”处理。省略或设为 `null` 表示禁用空闲过期。 |
 | `providers` | 字典 | `{}` | 否 | Provider 定义（见下方）。 |
 | `model_groups` | 字典 | `{}` | 否 | 模型回退组（见下方）。 |
 | `log_level` | 字符串 | `"INFO"` | 否 | 日志级别：`TRACE`、`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`。 |
@@ -325,6 +327,8 @@ blocks:
 |------|------|------|------|
 | `enable` | 布尔 | 是 | 是否开启该任务的 session history 记录。 |
 | `max_history_length` | 整型 | 当 `enable: true` 时必填 | 这个任务路径在单个 session 中最多保留多少条记录，必须是正整数。每次追加后都会按这个长度截断更旧的记录。 |
+
+session history 只保存在当前进程内存中。如果在 `config/config.yml` 中配置了 `session_idle_timeout_minutes`，那么同一个 session 空闲达到该分钟数后，会在下一次使用这个 `session_id` 时被整体判定为过期。过期后，该 session 下所有 task path 的保留 history 都会先被清空，因此 `.history[index]` 会表现得像此前没有任何上下文一样。
 
 `messages[*]` 中和 session 行为相关的字段：
 

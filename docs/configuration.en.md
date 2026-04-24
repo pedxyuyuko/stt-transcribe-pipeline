@@ -140,6 +140,7 @@ host: "0.0.0.0"
 port: 8000
 api_key: "your-api-key"
 default_preset: "default"
+session_idle_timeout_minutes: 10
 
 providers:
   local-whisper:
@@ -167,6 +168,7 @@ log_level: "INFO"
 | `port` | int | `8000` | No | Server port. |
 | `api_key` | string | — | Yes | API key for authenticating incoming requests. Alphanumeric, underscores, and hyphens only (`^[a-zA-Z0-9_-]+$`). |
 | `default_preset` | string | — | Yes | Default pipeline preset name. Must match a `.yaml` filename (without extension) in `config/presets/`. |
+| `session_idle_timeout_minutes` | int | `null` | No | Session-history idle expiration in minutes. If a `preset_id/session_id` session has no new reads or writes for at least this long, its retained in-memory history is cleared on the next request and treated as a cold start. Omit or set to `null` to disable idle expiration. |
 | `providers` | dict | `{}` | No | Provider definitions (see below). |
 | `model_groups` | dict | `{}` | No | Model fallback groups (see below). |
 | `log_level` | string | `"INFO"` | No | Logging level: `TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
@@ -325,6 +327,8 @@ What happens:
 |-------|------|----------|-------------|
 | `enable` | bool | Yes | Turns per-task session history recording on or off. |
 | `max_history_length` | int | Required when `enable: true` | Maximum retained entries for this task path in one session. Must be a positive integer. After append, older entries are truncated. |
+
+Session-history retention is process-local and in-memory. If `session_idle_timeout_minutes` is configured in `config/config.yml`, the whole session is considered stale after that many idle minutes. On the next request for the same `session_id`, all retained history for that session is dropped before message assembly, so `.history[index]` behaves as if no prior session context existed.
 
 `messages[*]` fields used for session-aware behavior:
 
