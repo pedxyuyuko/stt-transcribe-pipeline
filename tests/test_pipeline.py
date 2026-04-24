@@ -849,6 +849,57 @@ async def test_history_store_session_isolation():
 
 
 @pytest.mark.asyncio
+async def test_history_store_expires_idle_session_across_task_paths():
+    current_time = 0.0
+
+    def _time_provider() -> float:
+        return current_time
+
+    store = SessionHistoryStore(
+        max_history_length=3,
+        session_idle_timeout_minutes=10,
+        time_provider=_time_provider,
+    )
+
+    _ = await store.append("session-a", "block.task", "a-1")
+    _ = await store.append("session-a", "other.task", "a-2")
+
+    current_time = 300.0
+    _ = await store.append("session-b", "block.task", "b-1")
+
+    current_time = 600.0
+
+    assert await store.read("session-a", "block.task") == []
+    assert await store.read("session-a", "other.task") == []
+    assert await store.read("session-b", "block.task") == ["b-1"]
+
+
+@pytest.mark.asyncio
+async def test_history_store_read_refreshes_idle_timeout():
+    current_time = 0.0
+
+    def _time_provider() -> float:
+        return current_time
+
+    store = SessionHistoryStore(
+        max_history_length=3,
+        session_idle_timeout_minutes=10,
+        time_provider=_time_provider,
+    )
+
+    _ = await store.append("session-a", "block.task", "first")
+
+    current_time = 599.0
+    assert await store.read("session-a", "block.task") == ["first"]
+
+    current_time = 1198.0
+    assert await store.read("session-a", "block.task") == ["first"]
+
+    current_time = 1798.0
+    assert await store.read("session-a", "block.task") == []
+
+
+@pytest.mark.asyncio
 async def test_concurrent_history_store_appends_preserve_bounded_length():
     store = SessionHistoryStore(max_history_length=5)
 
@@ -870,6 +921,28 @@ async def test_main_lifespan_attaches_session_history_store():
         history_store = cast(SessionHistoryStore, app.state.session_history_store)
         assert isinstance(history_store, SessionHistoryStore)
         assert await history_store.read("session-a", "block.task") == []
+
+
+@pytest.mark.asyncio
+async def test_main_lifespan_threads_session_idle_timeout(monkeypatch):
+    from main import app
+    import app.config.loader as loader_module
+
+    app_config = AppConfig(
+        api_key="sk-test",
+        default_preset="default",
+        session_idle_timeout_minutes=7,
+    )
+
+    monkeypatch.setattr(
+        loader_module,
+        "load_all_configs",
+        lambda config_dir: (app_config, {"default": PipelineConfig(output="{a.x.result}", blocks=[BlockConfig(tag="a", tasks=[TaskConfig(tag="x", type="transcriptions", model="openai/whisper-1", need_audio=True)])])}),
+    )
+
+    async with app.router.lifespan_context(app):
+        history_store = cast(SessionHistoryStore, app.state.session_history_store)
+        assert history_store.session_idle_timeout_minutes == 7
 
 
 @pytest.mark.asyncio

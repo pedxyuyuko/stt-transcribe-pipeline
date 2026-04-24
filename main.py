@@ -45,7 +45,9 @@ async def lifespan(app: FastAPI):
         timeout=httpx.Timeout(connect=10, read=120, write=30, pool=15),
     )
     app.state.http_client = client
-    app.state.session_history_store = SessionHistoryStore()
+    app.state.session_history_store = SessionHistoryStore(
+        session_idle_timeout_minutes=app_config.session_idle_timeout_minutes
+    )
     yield
     await client.aclose()
 
