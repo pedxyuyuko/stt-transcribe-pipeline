@@ -9,6 +9,7 @@ from app.config.schema import (
     MessageConfig,
     PipelineConfig,
     ProviderConfig,
+    RecordConfig,
     TaskConfig,
 )
 from app.config.loader import load_all_configs, ConfigError
@@ -253,6 +254,246 @@ class TestPipelineConfig:
     def test_chat_task_rejects_empty_messages_without_audio(self):
         with pytest.raises(ValidationError, match="[Mm]essages"):
             _ = TaskConfig(tag="x", type="chat", model="smart", messages=[])
+
+    def test_record_config_accepts_disabled_without_max_history_length(self):
+        record = RecordConfig(enable=False)
+        assert record.enable is False
+        assert record.max_history_length is None
+
+    def test_record_config_requires_max_history_length_when_enabled(self):
+        with pytest.raises(ValidationError, match="max_history_length"):
+            _ = RecordConfig(enable=True)
+
+    def test_record_config_rejects_non_positive_max_history_length(self):
+        with pytest.raises(ValidationError, match="positive integer"):
+            _ = RecordConfig(enable=False, max_history_length=0)
+
+    def test_task_accepts_record_config_with_positive_max_history_length(self):
+        task = TaskConfig(
+            tag="x",
+            type="chat",
+            model="smart",
+            messages=[MessageConfig(role="user", content="hello")],
+            record=RecordConfig(enable=True, max_history_length=3),
+        )
+        assert task.record is not None
+        assert task.record.max_history_length == 3
+
+    def test_chat_message_accepts_require_session_without_history_reference(self):
+        task = TaskConfig(
+            tag="x",
+            type="chat",
+            model="smart",
+            messages=[
+                MessageConfig(
+                    role="user",
+                    content="Summarize the latest session.",
+                    require_session=True,
+                    missing_strategy="skip",
+                )
+            ],
+        )
+        assert task.messages is not None
+        assert task.messages[0].missing_strategy == "skip"
+
+    def test_chat_message_accepts_missing_strategy_with_history_reference(self):
+        task = TaskConfig(
+            tag="x",
+            type="chat",
+            model="smart",
+            messages=[
+                MessageConfig(
+                    role="user",
+                    content="Use {stt.transcript.history[0]}",
+                    missing_strategy="empty",
+                )
+            ],
+        )
+        assert task.messages is not None
+        assert task.messages[0].missing_strategy == "empty"
+
+    def test_chat_message_accepts_missing_strategy_with_signed_history_reference(self):
+        task = TaskConfig(
+            tag="x",
+            type="chat",
+            model="smart",
+            messages=[
+                MessageConfig(
+                    role="user",
+                    content="Use {stt.transcript.history[-1]}",
+                    missing_strategy="skip",
+                )
+            ],
+        )
+        assert task.messages is not None
+        assert task.messages[0].missing_strategy == "skip"
+
+    def test_chat_message_rejects_missing_strategy_without_session_need(self):
+        with pytest.raises(ValidationError, match="missing_strategy"):
+            _ = TaskConfig(
+                tag="x",
+                type="chat",
+                model="smart",
+                messages=[
+                    MessageConfig(
+                        role="user",
+                        content="Hello there.",
+                        missing_strategy="skip",
+                    )
+                ],
+            )
+
+    def test_transcriptions_task_rejects_message_session_controls(self):
+        with pytest.raises(ValidationError, match="[Mm]essages"):
+            _ = TaskConfig(
+                tag="x",
+                type="transcriptions",
+                model="local/qwen",
+                messages=[
+                    MessageConfig(
+                        role="user",
+                        content="Hello there.",
+                        require_session=True,
+                        missing_strategy="skip",
+                    )
+                ],
+            )
+
+    def test_chat_history_reference_does_not_require_record_enabled(self):
+        task = TaskConfig(
+            tag="x",
+            type="chat",
+            model="smart",
+            messages=[
+                MessageConfig(
+                    role="user",
+                    content="Use {stt.transcript.history[1]}",
+                    missing_strategy="skip",
+                )
+            ],
+        )
+        assert task.record is None
+        assert task.messages is not None
+        assert task.messages[0].missing_strategy == "skip"
+
+    def test_pipeline_config_accepts_signed_history_reference_from_previous_block(self):
+        cfg = PipelineConfig(
+            output="{correct.final.result}",
+            blocks=[
+                BlockConfig(
+                    tag="stt",
+                    tasks=[
+                        TaskConfig(
+                            tag="transcript",
+                            type="transcriptions",
+                            model="local/qwen",
+                            need_audio=True,
+                        )
+                    ],
+                ),
+                BlockConfig(
+                    tag="correct",
+                    tasks=[
+                        TaskConfig(
+                            tag="final",
+                            type="chat",
+                            model="smart",
+                            messages=[
+                                MessageConfig(
+                                    role="user",
+                                    content="Use {stt.transcript.history[-1]}",
+                                )
+                            ],
+                        )
+                    ],
+                ),
+            ],
+        )
+        assert cfg.blocks[1].tasks[0].messages is not None
+
+    def test_pipeline_config_rejects_same_block_history_reference(self):
+        with pytest.raises(ValidationError, match="[Uu]ndefined|[Rr]eferences"):
+            PipelineConfig(
+                output="{a.y.result}",
+                blocks=[
+                    BlockConfig(
+                        tag="a",
+                        tasks=[
+                            TaskConfig(
+                                tag="x",
+                                type="transcriptions",
+                                model="local/qwen",
+                                need_audio=True,
+                            ),
+                            TaskConfig(
+                                tag="y",
+                                type="chat",
+                                model="smart",
+                                messages=[
+                                    MessageConfig(
+                                        role="user",
+                                        content="Use {a.x.history[0]}",
+                                    )
+                                ],
+                            ),
+                        ],
+                    )
+                ],
+            )
+
+    def test_pipeline_config_rejects_forward_history_reference(self):
+        with pytest.raises(ValidationError, match="[Uu]ndefined|[Rr]eferences"):
+            PipelineConfig(
+                output="{b.y.result}",
+                blocks=[
+                    BlockConfig(
+                        tag="b",
+                        tasks=[
+                            TaskConfig(
+                                tag="y",
+                                type="chat",
+                                model="smart",
+                                messages=[
+                                    MessageConfig(
+                                        role="user",
+                                        content="Use {a.x.history[-1]}",
+                                    )
+                                ],
+                            )
+                        ],
+                    ),
+                    BlockConfig(
+                        tag="a",
+                        tasks=[
+                            TaskConfig(
+                                tag="x",
+                                type="transcriptions",
+                                model="local/qwen",
+                                need_audio=True,
+                            )
+                        ],
+                    ),
+                ],
+            )
+
+    def test_pipeline_output_stays_result_only(self):
+        with pytest.raises(ValidationError, match="[Oo]utput"):
+            PipelineConfig(
+                output="{a.x.history[-1]}",
+                blocks=[
+                    BlockConfig(
+                        tag="a",
+                        tasks=[
+                            TaskConfig(
+                                tag="x",
+                                type="transcriptions",
+                                model="local/qwen",
+                                need_audio=True,
+                            )
+                        ],
+                    )
+                ],
+            )
 
 
 def _full_config(

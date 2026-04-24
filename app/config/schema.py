@@ -6,6 +6,14 @@ from pydantic import BaseModel, field_validator, model_validator
 from typing import Any, Literal, Dict, List
 
 
+HISTORY_REFERENCE_PATTERN = re.compile(
+    r"\{[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.history\[[+-]?\d+\]\}"
+)
+VARIABLE_REFERENCE_PATTERN = re.compile(
+    r"\{(?P<task_path>[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\.(?:(?:result)|(?:history\[(?P<index>[+-]?\d+)\]))\}"
+)
+
+
 class AppConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
@@ -49,6 +57,23 @@ class AppConfig(BaseModel):
 class MessageConfig(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
+    require_session: bool = False
+    missing_strategy: Literal["skip", "empty"] | None = None
+
+
+class RecordConfig(BaseModel):
+    enable: bool
+    max_history_length: int | None = None
+
+    @model_validator(mode="after")
+    def record_fields_valid(self) -> RecordConfig:
+        if self.max_history_length is not None and self.max_history_length <= 0:
+            raise ValueError("'record.max_history_length' must be a positive integer.")
+        if self.enable and self.max_history_length is None:
+            raise ValueError(
+                "'record.max_history_length' is required when 'record.enable' is true."
+            )
+        return self
 
 
 class TaskConfig(BaseModel):
@@ -60,6 +85,7 @@ class TaskConfig(BaseModel):
     audio_force_transcode: Literal["wav", "mp3"] | None = None
     prompt: str | None = None
     messages: List[MessageConfig] | None = None
+    record: RecordConfig | None = None
     max_retries: int = 0
     timeout: float | None = None
     model_params: Dict[str, Any] | None = None
@@ -79,6 +105,18 @@ class TaskConfig(BaseModel):
                 raise ValueError(
                     "Chat task with 'audio_force_transcode' must set 'need_audio' to true."
                 )
+            if self.messages:
+                for message in self.messages:
+                    has_history_reference = bool(
+                        HISTORY_REFERENCE_PATTERN.search(message.content)
+                    )
+                    if message.missing_strategy is not None and not (
+                        message.require_session or has_history_reference
+                    ):
+                        raise ValueError(
+                            "Chat message 'missing_strategy' is only allowed when "
+                            + "'require_session' is true or the message content contains '.history[...]'."
+                        )
         elif self.type == "transcriptions":
             if self.messages is not None:
                 raise ValueError(
@@ -135,6 +173,7 @@ class PipelineConfig(BaseModel):
     def validate_variable_refs(self) -> PipelineConfig:
         seen: set[str] = set()
         for block in self.blocks:
+            block_refs: set[str] = set()
             for task in block.tasks:
                 content_strings: list[str] = []
                 if task.prompt:
@@ -142,16 +181,18 @@ class PipelineConfig(BaseModel):
                 if task.messages:
                     content_strings.extend(msg.content for msg in task.messages)
                 for text in content_strings:
-                    refs = re.findall(
-                        r"\{([a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)\.result\}", text
-                    )
+                    refs = [
+                        match.group("task_path")
+                        for match in VARIABLE_REFERENCE_PATTERN.finditer(text)
+                    ]
                     for ref in refs:
                         if ref not in seen:
                             raise ValueError(
                                 f"Task '{block.tag}.{task.tag}' references undefined variable '{{{ref}.result}}'. "
                                 f"Variables must reference blocks/tasks that appear earlier in the pipeline."
                             )
-                seen.add(f"{block.tag}.{task.tag}")
+                block_refs.add(f"{block.tag}.{task.tag}")
+            seen.update(block_refs)
         return self
 
 
