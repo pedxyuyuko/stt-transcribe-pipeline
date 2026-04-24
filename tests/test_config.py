@@ -82,6 +82,22 @@ class TestAppConfig:
         p = ProviderConfig(base_url="http://localhost:8000/v1", api_key="none")
         assert p.base_url == "http://localhost:8000/v1"
 
+    def test_valid_session_idle_timeout_minutes(self):
+        cfg = AppConfig(
+            api_key="sk-test",
+            default_preset="default",
+            session_idle_timeout_minutes=10,
+        )
+        assert cfg.session_idle_timeout_minutes == 10
+
+    def test_invalid_session_idle_timeout_minutes(self):
+        with pytest.raises(ValidationError, match="positive integer"):
+            AppConfig(
+                api_key="sk-test",
+                default_preset="default",
+                session_idle_timeout_minutes=0,
+            )
+
 
 class TestPipelineConfig:
     def test_valid_pipeline_config(self):

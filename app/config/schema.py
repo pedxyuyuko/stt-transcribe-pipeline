@@ -22,6 +22,7 @@ class AppConfig(BaseModel):
     providers: Dict[str, "ProviderConfig"] = {}
     model_groups: Dict[str, List[str]] = {}
     log_level: str = "INFO"
+    session_idle_timeout_minutes: int | None = None
 
     @field_validator("log_level")
     @classmethod
@@ -51,6 +52,13 @@ class AppConfig(BaseModel):
                         f"Model group '{group_name}' entry '{entry}' is invalid. "
                         f"Must match 'provider_id/model_id' format (contains '/')."
                     )
+        return v
+
+    @field_validator("session_idle_timeout_minutes")
+    @classmethod
+    def session_idle_timeout_minutes_valid(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError("session_idle_timeout_minutes must be a positive integer.")
         return v
 
 
