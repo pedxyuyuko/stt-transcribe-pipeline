@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from uvicorn import run
 
 from app.api import health, transcription
+from app.history_store import SessionHistoryStore
 
 _SKIP_AUTH = os.environ.get("SKIP_AUTH", "").strip().lower() in ("1", "true", "yes")
 
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
         timeout=httpx.Timeout(connect=10, read=120, write=30, pool=15),
     )
     app.state.http_client = client
+    app.state.session_history_store = SessionHistoryStore()
     yield
     await client.aclose()
 

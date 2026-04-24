@@ -49,6 +49,22 @@ def _openai_error(message: str, error_type: str, code: str) -> JSONResponse:
     )
 
 
+def _parse_model_selector(model: str) -> tuple[str, str | None] | None:
+    if model.count("/") > 1:
+        return None
+
+    if "/" not in model:
+        return model, None
+
+    preset_name, user_session_id = model.split("/", 1)
+    if not preset_name:
+        return None
+    if not user_session_id or user_session_id.isspace():
+        return None
+
+    return preset_name, user_session_id
+
+
 def _infer_audio_input_format(filename: str | None) -> str:
     if not filename:
         return "wav"
@@ -61,6 +77,7 @@ async def _handle_transcription(
     request: Request,
     preset: PipelineConfig,
     preset_name: str,
+    user_session_id: str | None,
     file: UploadFile,
     model: str,
     language: str | None,
@@ -107,6 +124,7 @@ async def _handle_transcription(
             preset=preset,
             models_config=request.app.state.app_config,
             client=request.app.state.http_client,
+            user_session_id=user_session_id,
             audio_bytes=audio_bytes,
             audio_filename=audio_filename,
             audio_input_format=audio_input_format,
@@ -188,14 +206,24 @@ async def transcribe(
     presets: dict[str, PipelineConfig] = request.app.state.presets
     default_preset_name = request.app.state.app_config.default_preset
 
-    if model and model in presets:
-        preset_name = model
+    parsed_model = _parse_model_selector(model)
+    if parsed_model is None:
+        return _openai_error(
+            message="Invalid model value. Expected 'preset_id' or 'preset_id/session_id'.",
+            error_type="invalid_request_error",
+            code="invalid_model",
+        )
+
+    requested_preset_name, user_session_id = parsed_model
+
+    if requested_preset_name and requested_preset_name in presets:
+        preset_name = requested_preset_name
     else:
         preset_name = default_preset_name
-        if model:
+        if requested_preset_name:
             logger.warning(
                 "Requested model '{}' has no matching preset, falling back to '{}'",
-                model,
+                requested_preset_name,
                 default_preset_name,
             )
 
@@ -205,6 +233,7 @@ async def transcribe(
         request=request,
         preset=preset,
         preset_name=preset_name,
+        user_session_id=user_session_id,
         file=file,
         model=model,
         language=language,
