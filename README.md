@@ -21,7 +21,7 @@ The input and output formats follow the OpenAI API conventions, making this a dr
 - OpenAI-compatible API -- accepts multipart form requests and returns OpenAI-style JSON; works with any existing OpenAI audio client
 - Multi-provider support -- configure any number of OpenAI-compatible STT and LLM providers (local or cloud)
 - Variable substitution -- pass results between blocks using {block_tag.task_tag.result} syntax
-- Preset system -- switch between different pipeline configurations via the `model` request field
+- Preset system -- select presets with `model=preset_id` or `model=preset_id/session_id`
 - Per-task model parameters -- pass arbitrary parameters like `temperature`, `top_p`, or `thinking` to individual tasks via `model_params`
 - Docker support -- multi-stage build with pre-built images on Docker Hub
 - Bearer token auth -- API protected by Bearer token; bypass with SKIP_AUTH=1 for local development
@@ -93,7 +93,23 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "response_format=json"
 ```
 
-The `model` field selects which pipeline preset to use. If `model` matches a preset filename in `config/presets/` (without the `.yaml` extension), that preset runs. If empty or unmatched, the `default_preset` from `config/config.yml` is used.
+The `model` field selects which pipeline preset to use. Valid forms are `preset_id` and `preset_id/session_id`.
+
+- `default` runs `config/presets/default.yaml`
+- `default/user-123` runs preset `default` and uses `user-123` as the request's session history key
+- an empty `model` value falls back to `default_preset`
+- an unknown preset name also falls back to `default_preset`
+- malformed values such as `/user-123`, `default/`, or `default/user/extra` are rejected with `invalid_model`
+
+Session history for the v1 API is process-local and in memory only, so it is lost when the server restarts.
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -H "Authorization: Bearer sk-your-api-key-here" \
+  -F "file=@audio.wav" \
+  -F "model=default/user-123" \
+  -F "response_format=json"
+```
 
 ### Health Check
 
@@ -117,7 +133,7 @@ The `response_format` parameter controls the shape of the returned response:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `file` | file | required | Audio file (max 25MB) |
-| `model` | string | "" | Selects which pipeline preset to use. Matches preset filenames in `config/presets/`. Empty or unmatched falls back to `default_preset`. |
+| `model` | string | "" | Selects which pipeline preset to use. Valid forms are `preset_id` and `preset_id/session_id`. Empty or unknown preset names fall back to `default_preset`. Malformed values are rejected with `invalid_model`. |
 | `language` | string | null | Accepted for OpenAI API compatibility. |
 | `prompt` | string | null | Accepted for OpenAI API compatibility. |
 | `response_format` | string | "json" | Output format: json, text, or verbose_json |
@@ -178,9 +194,11 @@ Blocks execute sequentially. Block 2 waits for Block 1 to complete before starti
 
 Tasks within a block execute in parallel. Both `correct_grammar` and `fix_punctuation` in Block 2 start at the same time via asyncio.gather.
 
-Variable substitution allows later blocks to reference the output of earlier blocks. The syntax is `{block_tag.task_tag.result}`. For example, in Block 3 you might reference the output of the correction task from Block 2 as `{correction.correct_grammar.result}`.
+Variable substitution allows later blocks to reference the output of earlier blocks. The syntax is `{block_tag.task_tag.result}`. Chat message content can also read retained session history with `{block_tag.task_tag.history[index]}` when that upstream task uses `record.enable: true` and the request includes `preset_id/session_id`. `[0]` means the newest retained entry and `[-1]` means the oldest retained entry.
 
 A block can declare a checkpoint by setting the `checkpoint` field to one of its task tags. If a later block fails and retries are exhausted, the pipeline falls back to the last checkpointed result rather than returning an error. This means a request can still return useful transcription even if the correction step fails.
+
+For chat messages, the session-aware filtering rules are message-scoped. `require_session: true` skips only that message when no session ID is present. `missing_strategy: skip` removes only that message when a `.history[...]` lookup misses. `missing_strategy: empty` keeps the message and substitutes an empty string for the missing history reference.
 
 Model fallback chains are configured as named groups in `config/config.yml`. When a task references a group name, the system tries each model in the group in order. This lets you specify a primary provider with a cheaper or local fallback.
 

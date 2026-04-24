@@ -313,10 +313,27 @@ blocks:
 | `audio_format` | 字符串 | `"input_audio"` | 否 | `chat` 类型且 `need_audio` 为 true 时的音频内容格式。`"input_audio"`：OpenAI 原生格式（`{"type": "input_audio", "input_audio": {"data": "...", "format": "wav"}}`）。`"audio_url"`：data URI 格式，适用于 VLLM/VibeVoice 等兼容服务（`{"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,..."}}`）。`transcriptions` 类型忽略此字段。 |
 | `audio_force_transcode` | 字符串 | `null` | 否 | 在发送给该 Task 前，使用 `ffmpeg` 将音频真实重编码为 `"wav"` 或 `"mp3"`。对 `chat` 类型要求 `need_audio: true`；对 `transcriptions` 类型会同时改变发送给 provider 的音频字节、文件名和 content type。 |
 | `prompt` | 字符串 | `null` | 否 | `transcriptions` 类型的提示文本，作为 `prompt` 表单字段发送。支持 `{block.task.result}` 变量替换。对 `chat` 类型无效；请改用 `messages`。 |
-| `messages` | 列表 | `null` | 否 | `chat` 类型的消息列表。每个条目是包含 `role`（如 `"system"`、`"user"`）和 `content`（文本，支持 `{block.task.result}` 变量替换）的对象。作为 `messages` 数组发送到 chat completions 接口。`chat` 类型必须提供此字段；`transcriptions` 类型禁止使用。 |
+| `messages` | 列表 | `null` | 否 | `chat` 类型的消息列表。每个条目包含 `role`、`content`，以及可选的 `require_session`、`missing_strategy`。`content` 支持 `{block.task.result}` 和 `{block.task.history[index]}` 变量替换。发送到 chat completions 之前会先经过 session 感知过滤。除非设置了 `need_audio: true`，否则 `chat` 类型必须提供该字段；`transcriptions` 类型禁止使用。 |
+| `record` | 字典 | `null` | 否 | 当前任务的 session history 记录配置。启用后，如果请求使用了 `preset_id/session_id`，任务结果会在执行完成后追加到该任务路径对应的内存 history 中。 |
 | `max_retries` | 整型 | `0` | 否 | 所有模型失败后重试整条回退链的次数。`0` = 不重试。 |
 | `timeout` | 浮点数 | `null` | 否 | 单次请求超时（秒）。未设置时使用全局 HTTP 客户端超时（connect 10s、read 120s、write 30s）。 |
 | `model_params` | 字典 | `null` | 否 | 传递给模型 API 的额外参数（如 `temperature`、`top_p`、`max_tokens`）。`chat` 类型合并到 JSON 请求体，`transcriptions` 类型添加为表单字段。 |
+
+`record` 字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `enable` | 布尔 | 是 | 是否开启该任务的 session history 记录。 |
+| `max_history_length` | 整型 | 当 `enable: true` 时必填 | 这个任务路径在单个 session 中最多保留多少条记录，必须是正整数。每次追加后都会按这个长度截断更旧的记录。 |
+
+`messages[*]` 中和 session 行为相关的字段：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `role` | 字符串 | — | 消息角色，只能是 `system`、`user`、`assistant`。 |
+| `content` | 字符串 | — | 消息文本。支持 `{block.task.result}` 和 `{block.task.history[index]}`。 |
+| `require_session` | 布尔 | `false` | 如果为 `true` 且请求没有提供 session ID，只会跳过当前这一条消息，不影响其他消息。 |
+| `missing_strategy` | 字符串 | `null` | 只控制当前消息里缺失的 history 引用。`skip` 会删除当前这一条消息。`empty` 会把缺失的 `{block.task.history[index]}` 替换为空字符串，并保留该消息。 |
 
 **Task 类型：**
 
@@ -339,9 +356,60 @@ messages:
     content: "纠正这段文字：{stt.raw.result}"
 ```
 
+Chat 消息还可以通过 `{block_tag.task_tag.history[index]}` 读取保留的 session history：
+
+```yaml
+output: "{reply.answer.result}"
+
+blocks:
+  - tag: stt
+    tasks:
+      - tag: raw
+        type: transcriptions
+        model: "openai/whisper-1"
+        record:
+          enable: true
+          max_history_length: 3
+
+  - tag: reply
+    tasks:
+      - tag: answer
+        type: chat
+        model: "openai/gpt-4o-mini"
+        messages:
+          - role: "system"
+            content: "你正在继续一个已有的转写校对 session。"
+            require_session: true
+            missing_strategy: skip
+          - role: "user"
+            content: |
+              当前转写：
+              {stt.raw.result}
+
+              上一次最新转写：
+              {stt.raw.history[0]}
+            missing_strategy: empty
+```
+
+`.history[index]` 的索引语义如下：
+
+- `[0]` 表示当前保留记录中最新的一条
+- `[1]` 表示第二新的一条
+- `[-1]` 表示当前保留记录中最旧的一条
+- 负数索引从保留队尾向前计数，逐步指向更旧的保留记录
+- 如果 `max_history_length` 截断了 history，保留的是最新的记录，索引只针对截断后仍保留的那一段
+
+消息过滤和缺失 history 的处理规则是精确的：
+
+- `require_session: true` 在请求没有 session ID 时，只跳过当前这一条消息
+- `missing_strategy: skip` 在当前消息引用的某个 `.history[...]` 指向不存在的保留记录时，只移除当前这一条消息
+- `missing_strategy: empty` 会保留当前消息，并把缺失的 `.history[...]` 引用替换为空字符串
+- 这些规则只作用于 chat `messages[*]`，不作用于顶层 `output`
+
 规则：
 - 只能引用**更早** Block 的 Task（不能引用同一个 Block 内的 Task — 它们并行执行）。
 - 前向引用在启动时会被拒绝。
+- `.history[index]` 只支持在运行时会经过 chat message 组装与解析的消息内容中使用。顶层 `output` 仍然只接受 `{block_tag.task_tag.result}`，并且 v1 中 transcriptions 的 `prompt` 不会解析 `.history[...]` 引用。
 - JSON 风格的大括号如 `{"key": "value"}` 不受影响。
 
 ---

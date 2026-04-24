@@ -313,10 +313,27 @@ What happens:
 | `audio_format` | string | `"input_audio"` | No | Audio content format for `chat` tasks when `need_audio` is true. `"input_audio"`: OpenAI-native format (`{"type": "input_audio", "input_audio": {"data": "...", "format": "wav"}}`). `"audio_url"`: data URI format for VLLM/VibeVoice-compatible providers (`{"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,..."}}`). Ignored for `transcriptions` tasks. |
 | `audio_force_transcode` | string | `null` | No | Actually re-encode audio to `"wav"` or `"mp3"` with `ffmpeg` before forwarding it to this task. For `chat`, this requires `need_audio: true`. For `transcriptions`, it changes the uploaded bytes, filename, and content type sent to the provider. |
 | `prompt` | string | `null` | No | Prompt text for `transcriptions` tasks. Sent as the `prompt` form field in the STT request. Supports `{block.task.result}` variable substitution. Invalid for `chat` tasks; use `messages` instead. |
-| `messages` | list | `null` | No | Message list for `chat` tasks. Each entry is an object with `role` (e.g. `"system"`, `"user"`) and `content` (the text, supports `{block.task.result}` variable substitution). Sent as the `messages` array in the chat completions request. Required for `chat` tasks and invalid for `transcriptions` tasks. |
+| `messages` | list | `null` | No | Message list for `chat` tasks. Each entry is an object with `role`, `content`, optional `require_session`, and optional `missing_strategy`. `content` supports `{block.task.result}` and `{block.task.history[index]}` variable substitution. Sent as the `messages` array in the chat completions request after session-aware filtering. Required for `chat` tasks unless `need_audio: true`, and invalid for `transcriptions` tasks. |
+| `record` | dict | `null` | No | Optional session-history recording settings for this task. When enabled and the request uses `preset_id/session_id`, the task result is appended to the in-memory history for this task path after execution. |
 | `max_retries` | int | `0` | No | How many times to retry the entire fallback chain after all models fail. `0` = no retries. |
 | `timeout` | float | `null` | No | Per-request timeout in seconds. When not set, the global HTTP client timeouts apply (connect 10s, read 120s, write 30s). |
 | `model_params` | dict | `null` | No | Extra parameters passed to the model API (e.g. `temperature`, `top_p`, `max_tokens`). Merged into the request body for `chat`, added as form fields for `transcriptions`. |
+
+`record` fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enable` | bool | Yes | Turns per-task session history recording on or off. |
+| `max_history_length` | int | Required when `enable: true` | Maximum retained entries for this task path in one session. Must be a positive integer. After append, older entries are truncated. |
+
+`messages[*]` fields used for session-aware behavior:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `role` | string | — | Chat role. Must be `system`, `user`, or `assistant`. |
+| `content` | string | — | Message text. Supports `{block.task.result}` and `{block.task.history[index]}` in chat message content. |
+| `require_session` | bool | `false` | If `true` and the request does not include a session ID, only this message is skipped. Other messages still run. |
+| `missing_strategy` | string | `null` | Controls only missing history entries for this message. `skip` removes only this message. `empty` substitutes an empty string for each missing `{block.task.history[index]}` reference and keeps the message. |
 
 **Task types:**
 
@@ -339,9 +356,60 @@ messages:
     content: "Correct this: {stt.raw.result}"
 ```
 
+Chat messages can also read retained session history with `{block_tag.task_tag.history[index]}`:
+
+```yaml
+output: "{reply.answer.result}"
+
+blocks:
+  - tag: stt
+    tasks:
+      - tag: raw
+        type: transcriptions
+        model: "openai/whisper-1"
+        record:
+          enable: true
+          max_history_length: 3
+
+  - tag: reply
+    tasks:
+      - tag: answer
+        type: chat
+        model: "openai/gpt-4o-mini"
+        messages:
+          - role: "system"
+            content: "You are continuing an existing transcription review session."
+            require_session: true
+            missing_strategy: skip
+          - role: "user"
+            content: |
+              Current transcript:
+              {stt.raw.result}
+
+              Previous newest transcript:
+              {stt.raw.history[0]}
+            missing_strategy: empty
+```
+
+Index semantics for `.history[index]`:
+
+- `[0]` is the newest retained entry
+- `[1]` is the next newest retained entry
+- `[-1]` is the oldest retained entry
+- Negative indexes count backward from the retained tail toward older retained entries
+- If `max_history_length` truncates history, retention keeps the newest entries and indexing applies to that retained slice only
+
+Message filtering and missing-history rules are precise:
+
+- `require_session: true` skips only that message when the request has no session ID
+- `missing_strategy: skip` removes only that message when one of its `.history[...]` references points to a missing retained entry
+- `missing_strategy: empty` keeps the message and replaces each missing `.history[...]` reference with an empty string
+- These rules apply only to chat `messages[*]`, not to top-level `output`
+
 Rules:
 - Can only reference tasks from **earlier** blocks (not the same block — tasks in a block run in parallel).
 - Forward references are rejected at startup.
+- `.history[index]` is supported only in chat message content that goes through runtime message assembly and resolution. Top-level `output` still only accepts `{block_tag.task_tag.result}`, and transcriptions `prompt` does not resolve `.history[...]` references in v1.
 - JSON braces like `{"key": "value"}` are not affected.
 
 ---
