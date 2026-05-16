@@ -20,6 +20,7 @@ stt-transcribe-pipeline 是一个为音频转写设计的高级流水线引擎�
 - **重试机制**：按 Task 级别配置重试次数，自动应对偶发网络故障
 - **灵活预设**：通过 `model=preset_id` 或 `model=preset_id/session_id` 选择 YAML 定义的 Pipeline Preset
 - **自定义模型参数**：通过 `model_params` 为每个 Task 独立设置 `temperature`、`top_p`、`thinking` 等任意模型参数
+- **可选 training logs**：只为完全成功的请求写入 JSON，敏感音频和 prompt 数据见配置文档说明
 - **OpenAI 兼容 API**：兼容现有的 OpenAI 客户端和工具链
 - **Bearer Token 认证**：设置 `SKIP_AUTH=1` 环境变量可跳过认证，便于本地开发
 
@@ -88,7 +89,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 - `default/user-123` 表示运行 `default` 预设，并使用 `user-123` 作为该请求的 session history 键
 - `model` 为空时会回退到 `default_preset`
 - 预设名不存在时也会回退到 `default_preset`
-- `/user-123`、`default/`、`default/user/extra` 这类格式错误的值会直接返回 `invalid_model`
+- `/user-123`、`default/` 这类格式错误的值会直接返回 `invalid_model`
 
 带 session ID 的示例：
 
@@ -143,7 +144,7 @@ SKIP_AUTH=1 python main.py
 
 配置分为两层：
 
-- **应用配置**（`config/config.yml`）：定义 Provider 连接信息、模型组、API Key、日志级别。基于 `config/config.example.yml` 模板创建
+- **应用配置**（`config/config.yml`）：定义 Provider 连接信息、模型组、API Key、日志级别，以及可选 training logs。基于 `config/config.example.yml` 模板创建
 - **流水线预设**（`config/presets/*.yaml`）：定义 Block 结构、Task 类型、Prompt 模板、重试策略。每个 YAML 文件是一个独立的 Preset
 
 模型引用格式为 `provider_id/model_name`（直接指定）或模型组名称（自动回退链）。例如 `openai/whisper-1` 或 `smart`。
@@ -152,7 +153,7 @@ SKIP_AUTH=1 python main.py
 
 音频文件最大支持 25MB。
 
-完整配置参考请查看 [配置指南](docs/configuration.zh-CN.md)。
+`training_log` 默认禁用。启用后只记录完全成功的请求，文件会包含敏感音频、prompts、model params、provider responses 和 outputs，请保护配置的目录。完整配置参考请查看 [配置指南](docs/configuration.zh-CN.md)。
 
 ## 工作原理
 

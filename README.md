@@ -23,6 +23,7 @@ The input and output formats follow the OpenAI API conventions, making this a dr
 - Variable substitution -- pass results between blocks using {block_tag.task_tag.result} syntax
 - Preset system -- select presets with `model=preset_id` or `model=preset_id/session_id`
 - Per-task model parameters -- pass arbitrary parameters like `temperature`, `top_p`, or `thinking` to individual tasks via `model_params`
+- Optional training logs -- write JSON for fully successful requests only, with sensitive audio and prompt data clearly documented
 - Docker support -- multi-stage build with pre-built images on Docker Hub
 - Bearer token auth -- API protected by Bearer token; bypass with SKIP_AUTH=1 for local development
 
@@ -99,7 +100,7 @@ The `model` field selects which pipeline preset to use. Valid forms are `preset_
 - `default/user-123` runs preset `default` and uses `user-123` as the request's session history key
 - an empty `model` value falls back to `default_preset`
 - an unknown preset name also falls back to `default_preset`
-- malformed values such as `/user-123`, `default/`, or `default/user/extra` are rejected with `invalid_model`
+- malformed values such as `/user-123` or `default/` are rejected with `invalid_model`
 
 Session history for the v1 API is process-local and in memory only, so it is lost when the server restarts.
 
@@ -143,7 +144,7 @@ The `response_format` parameter controls the shape of the returned response:
 
 Configuration is split across two file types:
 
-- **`config/config.yml`** -- application-level settings: server host/port, API key, provider definitions, model groups, and the default preset name.
+- **`config/config.yml`** -- application-level settings: server host/port, API key, provider definitions, model groups, the default preset name, and optional training logs.
 - **`config/presets/*.yaml`** -- pipeline preset definitions: the ordered list of blocks, each containing tasks with their prompts, parameters, and output settings.
 
 See [Configuration Guide](docs/configuration.en.md) for the complete reference.
@@ -155,6 +156,10 @@ host: "0.0.0.0"
 port: 8000
 api_key: "sk-your-api-key-here"
 default_preset: "default"
+session_idle_timeout_minutes: 10
+training_log:
+  enable: false
+  path: "training_logs"
 
 providers:
   local-qwen:
@@ -172,7 +177,7 @@ model_groups:
 log_level: "INFO"
 ```
 
-Model groups are referenced by name in preset task definitions. When a task references a group, the system tries each model in order until one succeeds. Direct model references use the `provider_id/model_name` format.
+Model groups are referenced by name in preset task definitions. When a task references a group, the system tries each model in order until one succeeds. Direct model references use the `provider_id/model_name` format. Training logs are disabled by default; if enabled, they contain sensitive audio, prompts, model params, provider responses, and outputs, so protect the configured directory. See the configuration guide for details.
 
 ## How It Works
 
