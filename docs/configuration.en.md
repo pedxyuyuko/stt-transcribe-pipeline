@@ -141,6 +141,9 @@ port: 8000
 api_key: "your-api-key"
 default_preset: "default"
 session_idle_timeout_minutes: 10
+training_log:
+  enable: false
+  path: "training_logs"
 
 providers:
   local-whisper:
@@ -169,6 +172,8 @@ log_level: "INFO"
 | `api_key` | string | — | Yes | API key for authenticating incoming requests. Alphanumeric, underscores, and hyphens only (`^[a-zA-Z0-9_-]+$`). |
 | `default_preset` | string | — | Yes | Default pipeline preset name. Must match a `.yaml` filename (without extension) in `config/presets/`. |
 | `session_idle_timeout_minutes` | int | `null` | No | Session-history idle expiration in minutes. If a `preset_id/session_id` session has no new reads or writes for at least this long, its retained in-memory history is cleared on the next request and treated as a cold start. Omit or set to `null` to disable idle expiration. |
+| `training_log.enable` | bool | `false` | No | Enables writing per-request training-log JSON files for fully successful requests only. Missing `training_log` is disabled by default. |
+| `training_log.path` | string | `null` | Required when `training_log.enable: true` | Directory for training-log JSON files. Must be non-empty when enabled. Relative paths resolve from the process current working directory; absolute paths are used as-is. |
 | `providers` | dict | `{}` | No | Provider definitions (see below). |
 | `model_groups` | dict | `{}` | No | Model fallback groups (see below). |
 | `log_level` | string | `"INFO"` | No | Logging level: `TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
@@ -210,7 +215,31 @@ Each entry must be in `provider_id/model_name` format. Every `provider_id` must 
 
 In a pipeline preset, reference a group by name (e.g. `model: "smart"`) instead of a specific model. The system tries each model in order on `HTTPStatusError`, `ConnectError`, or `TimeoutException`. If all fail, the task raises `AllModelsFailedError`.
 
-### 2.5 Environment Variables
+### 2.5 Training Log
+
+`training_log` is optional. If the whole section is missing, logging is disabled. To enable it, set both fields:
+
+```yaml
+training_log:
+  enable: true
+  path: "training_logs"
+```
+
+When enabled, `path` must be non-empty. A relative path is resolved from the process current working directory at write time; an absolute path is used as-is. The directory is created lazily only when the final JSON file is written for a fully successful request.
+
+The server writes one JSON file only after the pipeline succeeds and the final output is resolved. Requests that use checkpoint fallback are not logged. Hard failures are not logged. If the final training-log write fails, the API logs a warning and still returns the successful response.
+
+Filename format:
+
+- With a session ID: `{profile}-{session}-{request_id}.json`, for example `default-user_abc-18471234.json`
+- Without a session ID: `{profile}-{request_id}.json`, for example `default-18471234.json`
+- On collision: a numeric suffix is added, for example `default-18471234-2.json`
+
+Unsafe filename characters in the profile, session, and request ID are replaced with `_`.
+
+> **Privacy warning**: Training-log files contain the original audio base64, full prompts and messages, model params, raw provider responses, extracted task outputs, and the final output. Nested LLM input audio is omitted and references the top-level `audio.base64` field instead. Protect the configured directory and treat the files as sensitive data.
+
+### 2.6 Environment Variables
 
 | Variable | Values | Description |
 |----------|--------|-------------|

@@ -141,6 +141,9 @@ port: 8000
 api_key: "your-api-key"
 default_preset: "default"
 session_idle_timeout_minutes: 10
+training_log:
+  enable: false
+  path: "training_logs"
 
 providers:
   local-whisper:
@@ -169,6 +172,8 @@ log_level: "INFO"
 | `api_key` | 字符串 | — | 是 | 用于认证传入请求的 API 密钥。仅允许字母、数字、下划线和连字符（`^[a-zA-Z0-9_-]+$`）。 |
 | `default_preset` | 字符串 | — | 是 | 默认流水线预设名称。必须与 `config/presets/` 下某个 `.yaml` 文件名（不含扩展名）匹配。 |
 | `session_idle_timeout_minutes` | 整型 | `null` | 否 | session history 的空闲过期时间，单位为分钟。如果某个 `preset_id/session_id` 对应的 session 在这段时间内没有新的读写活动，则下一次请求到来时会先清空该 session 在内存中的全部保留 history，并按“没有旧上下文”处理。省略或设为 `null` 表示禁用空闲过期。 |
+| `training_log.enable` | 布尔值 | `false` | 否 | 是否为完全成功的请求写入逐请求 training-log JSON 文件。缺少 `training_log` 时默认禁用。 |
+| `training_log.path` | 字符串 | `null` | `training_log.enable: true` 时必填 | training-log JSON 文件目录。启用时必须为非空字符串。相对路径从进程当前工作目录解析，绝对路径按原样使用。 |
 | `providers` | 字典 | `{}` | 否 | Provider 定义（见下方）。 |
 | `model_groups` | 字典 | `{}` | 否 | 模型回退组（见下方）。 |
 | `log_level` | 字符串 | `"INFO"` | 否 | 日志级别：`TRACE`、`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`。 |
@@ -210,7 +215,31 @@ model_groups:
 
 在预设中通过组名引用（如 `model: "smart"`），而非指定具体模型。系统在 `HTTPStatusError`、`ConnectError` 或 `TimeoutException` 时自动切换到下一个模型。如果全部失败，任务抛出 `AllModelsFailedError`。
 
-### 2.5 环境变量
+### 2.5 Training Log
+
+`training_log` 是可选配置。整个配置段缺失时，默认不写日志。启用时需要同时设置两个字段：
+
+```yaml
+training_log:
+  enable: true
+  path: "training_logs"
+```
+
+启用后，`path` 必须是非空字符串。相对路径会在写入时从进程当前工作目录解析，绝对路径按原样使用。目录只会在完全成功的请求准备写入最终 JSON 文件时才延迟创建。
+
+服务只会在流水线成功且最终输出解析成功后写入一个 JSON 文件。触发检查点回退的请求不会写入。硬失败请求不会写入。如果最后的 training-log 写入失败，API 只记录 warning，并继续返回原本的成功响应。
+
+文件名格式：
+
+- 带 session ID：`{profile}-{session}-{request_id}.json`，例如 `default-user_abc-18471234.json`
+- 不带 session ID：`{profile}-{request_id}.json`，例如 `default-18471234.json`
+- 发生重名时：追加数字后缀，例如 `default-18471234-2.json`
+
+profile、session 和 request ID 中不安全的文件名字符会被替换为 `_`。
+
+> **隐私警告**：Training-log 文件包含原始音频 base64、完整 prompts 和 messages、model params、原始 provider responses、提取出的 task outputs，以及 final output。嵌套的 LLM input audio 会被省略，并引用顶层 `audio.base64` 字段。请保护配置的目录，并将这些文件视为敏感数据。
+
+### 2.6 环境变量
 
 | 变量 | 值 | 说明 |
 |------|-----|------|
