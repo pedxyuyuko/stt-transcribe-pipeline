@@ -21,6 +21,8 @@ async def execute_chat_task(
     audio_input_format: str,
     client: httpx.AsyncClient,
     model_name: str,
+    capture_recorder: Any | None = None,
+    task_path: str | None = None,
 ) -> str:
     """
     Execute an LLM chat task.
@@ -92,6 +94,8 @@ async def execute_chat_task(
         model=model_name,
         timeout=task.timeout,
         model_params=task.model_params,
+        capture_recorder=capture_recorder,
+        task_path=task_path,
     )
     logger.debug("Chat task output: {}", result)
     return result

@@ -16,6 +16,77 @@ import httpx
 from loguru import logger
 
 
+def _provider_label(provider_id: str, base_url: str) -> str:
+    return provider_id or base_url
+
+
+def _extract_response_content(response: dict[str, Any]) -> dict[str, Any]:
+    text = response.get("text")
+    if isinstance(text, str):
+        return {"text": text}
+
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices:
+        first_choice = choices[0]
+        if isinstance(first_choice, dict):
+            message = first_choice.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str):
+                    return {"content": content}
+
+    return {}
+
+
+def _success_response_payload(response_json: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "raw_json": response_json,
+        "extracted": _extract_response_content(response_json),
+    }
+
+
+def _error_response_payload(response: httpx.Response) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except json.JSONDecodeError as exc:
+        return {
+            "raw_text": response.text,
+            "parse_error": {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            },
+            "status_code": response.status_code,
+        }
+    if isinstance(payload, dict):
+        return {"raw_json": payload, "status_code": response.status_code}
+    return {"raw_json": payload, "status_code": response.status_code}
+
+
+def _record_provider_attempt(
+    capture_recorder: Any | None,
+    *,
+    task_path: str | None,
+    provider: str,
+    model: str,
+    endpoint: str,
+    status: str,
+    request: dict[str, Any],
+    response: dict[str, Any],
+) -> None:
+    if capture_recorder is None:
+        return
+
+    capture_recorder.record_provider_attempt(
+        task_path=task_path,
+        provider=provider,
+        model=model,
+        endpoint=endpoint,
+        status=status,
+        request=request,
+        response=response,
+    )
+
+
 class AllModelsFailedError(Exception):
     """Raised when all models in a fallback chain have failed."""
 
@@ -65,6 +136,8 @@ class ProviderClient:
         content_type: str = "application/octet-stream",
         timeout: float | None = None,
         model_params: dict[str, Any] | None = None,
+        capture_recorder: Any | None = None,
+        task_path: str | None = None,
     ) -> str:
         files = {
             "file": (filename, audio_bytes, content_type),
@@ -74,6 +147,14 @@ class ProviderClient:
             data["prompt"] = prompt
         if model_params:
             data.update(model_params)
+        capture_request: dict[str, Any] = {
+            **data,
+            "file": {
+                "filename": filename,
+                "content_type": content_type,
+                "size_bytes": len(audio_bytes),
+            },
+        }
 
         logger.debug(
             "STT API request | provider={} | endpoint=/audio/transcriptions | data={}",
@@ -99,6 +180,16 @@ class ProviderClient:
             timeout=timeout,
         )
         if response.is_error:
+            _record_provider_attempt(
+                capture_recorder,
+                task_path=task_path,
+                provider=_provider_label(self._provider_id, self._base_url),
+                model=model,
+                endpoint="/audio/transcriptions",
+                status="error",
+                request=capture_request,
+                response=_error_response_payload(response),
+            )
             raise httpx.HTTPStatusError(
                 response.text,
                 request=response.request,
@@ -120,6 +211,16 @@ class ProviderClient:
                 f"STT API '{self._base_url}' returned invalid JSON (status {response.status_code}): {e}. "
                 f"Body preview: {(response.text or '')[:512]}"
             ) from e
+        _record_provider_attempt(
+            capture_recorder,
+            task_path=task_path,
+            provider=_provider_label(self._provider_id, self._base_url),
+            model=model,
+            endpoint="/audio/transcriptions",
+            status="success",
+            request=capture_request,
+            response=_success_response_payload(data),
+        )
 
         # Safe extraction of metadata (different providers may have different formats)
         logger.debug(
@@ -139,6 +240,8 @@ class ProviderClient:
         model: str,
         timeout: float | None = None,
         model_params: dict[str, Any] | None = None,
+        capture_recorder: Any | None = None,
+        task_path: str | None = None,
     ) -> str:
         body: dict[str, Any] = {
             "model": model,
@@ -175,6 +278,16 @@ class ProviderClient:
             timeout=timeout,
         )
         if response.is_error:
+            _record_provider_attempt(
+                capture_recorder,
+                task_path=task_path,
+                provider=_provider_label(self._provider_id, self._base_url),
+                model=model,
+                endpoint="/chat/completions",
+                status="error",
+                request=body,
+                response=_error_response_payload(response),
+            )
             raise httpx.HTTPStatusError(
                 response.text,
                 request=response.request,
@@ -196,6 +309,16 @@ class ProviderClient:
                 f"Chat API '{self._base_url}' returned invalid JSON (status {response.status_code}): {e}. "
                 f"Body preview: {(response.text or '')[:512]}"
             ) from e
+        _record_provider_attempt(
+            capture_recorder,
+            task_path=task_path,
+            provider=_provider_label(self._provider_id, self._base_url),
+            model=model,
+            endpoint="/chat/completions",
+            status="success",
+            request=body,
+            response=_success_response_payload(data),
+        )
 
         # Safe extraction of usage metadata
         usage = data.get("usage", {})
@@ -277,6 +400,7 @@ async def call_with_fallback(
     models: List[Tuple[ProviderClient, str]],
     call_fn: Callable[[ProviderClient, str], Coroutine[Any, Any, str]],
     task_path: str = "",
+    capture_recorder: Any | None = None,
 ) -> str:
     try:
         from app.logger import set_context

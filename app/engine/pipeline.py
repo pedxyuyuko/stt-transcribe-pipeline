@@ -32,6 +32,7 @@ from app.services.audio import (
     get_audio_mime_type,
     transcode_audio,
 )
+from app.services.training_log import TrainingLogCollector, TrainingLogTaskRecorder
 from loguru import logger
 
 
@@ -91,15 +92,7 @@ class EmptyChatMessagesError(Exception):
 def _get_session_history_store(
     session_history_store: SessionHistoryStore | None,
 ) -> SessionHistoryStore | None:
-    if session_history_store is not None:
-        return session_history_store
-
-    try:
-        from main import app
-    except Exception:
-        return None
-
-    return getattr(app.state, "session_history_store", None)
+    return session_history_store
 
 
 async def _resolve_message_content_with_empty_history(
@@ -283,6 +276,7 @@ async def run_pipeline(
     audio_input_format: str = "wav",
     user_session_id: str | None = None,
     session_history_store: SessionHistoryStore | None = None,
+    training_log_collector: TrainingLogCollector | None = None,
 ) -> ResultStore:
     results: ResultStore = {}
     last_checkpoint_value: str | None = None
@@ -290,7 +284,7 @@ async def run_pipeline(
 
     logger.debug("Starting pipeline | blocks={}", len(preset.blocks))
 
-    for block in preset.blocks:
+    for block_index, block in enumerate(preset.blocks):
         logger.debug(
             "Executing block '{}' | tasks={}",
             block.tag,
@@ -299,12 +293,22 @@ async def run_pipeline(
         coros: list[Awaitable[str]] = []
         task_keys: list[tuple[str, str, TaskConfig]] = []
 
-        for task in block.tasks:
+        for task_index, task in enumerate(block.tasks):
             model_list: list[tuple[ProviderClient, str]] = resolve_model(
                 task.model, models_config
             )
             task_path = f"{block.tag}.{task.tag}"
             task_keys.append((block.tag, task.tag, task))
+            task_recorder: TrainingLogTaskRecorder | None = None
+            if training_log_collector is not None:
+                task_recorder = training_log_collector.start_task(
+                    block_tag=block.tag,
+                    task_tag=task.tag,
+                    task_type=task.type,
+                    model=task.model,
+                    block_index=block_index,
+                    task_index=task_index,
+                )
             logger.debug(
                 "  Task '{}.{}' | type={} | model={}",
                 block.tag,
@@ -335,6 +339,8 @@ async def run_pipeline(
                     stt_bytes: bytes = stt_audio_bytes,
                     stt_filename: str = stt_audio_filename,
                     stt_ct: str = stt_content_type,
+                    recorder: TrainingLogTaskRecorder | None = task_recorder,
+                    tp: str = task_path,
                 ):
                     return await execute_stt_task(
                         provider_client=pc,
@@ -344,6 +350,8 @@ async def run_pipeline(
                         model_name=mn,
                         filename=stt_filename,
                         content_type=stt_ct,
+                        capture_recorder=recorder,
+                        task_path=tp,
                     )
 
                 coros.append(
@@ -361,6 +369,7 @@ async def run_pipeline(
                     mn: str,
                     t: TaskConfig = task,
                     tp: str = task_path,
+                    recorder: TrainingLogTaskRecorder | None = task_recorder,
                 ):
                     resolved_messages = await _prepare_chat_messages(
                         t,
@@ -387,6 +396,8 @@ async def run_pipeline(
                         audio_input_format=chat_audio_input_format,
                         client=client,
                         model_name=mn,
+                        capture_recorder=recorder,
+                        task_path=tp,
                     )
 
                 coros.append(

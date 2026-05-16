@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from loguru import logger
@@ -27,6 +29,8 @@ async def execute_stt_task(
     model_name: str,
     filename: str = "audio.wav",
     content_type: str = "application/octet-stream",
+    capture_recorder: Any | None = None,
+    task_path: str | None = None,
 ) -> str:
     """
     Execute an STT transcription task.
@@ -62,6 +66,8 @@ async def execute_stt_task(
         model_params=task.model_params,
         filename=filename,
         content_type=content_type,
+        capture_recorder=capture_recorder,
+        task_path=task_path,
     )
     logger.debug("STT task output: {}", result)
     return result

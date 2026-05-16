@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import cast
+from typing import Any, cast
 from collections import deque
 
 import pytest
@@ -29,6 +29,7 @@ from app.engine.resolver import (
     VariableNotFoundError,
 )
 from app.services.providers import ProviderClient
+from app.services.training_log import AUDIO_OMITTED_MARKER, TrainingLogCollector
 
 
 class _SimpleHTTPXMock:
@@ -42,6 +43,7 @@ class _SimpleHTTPXMock:
         url: str,
         method: str,
         json: object | None = None,
+        text: str | None = None,
         status_code: int = 200,
     ) -> None:
         self._responses.append(
@@ -50,6 +52,7 @@ class _SimpleHTTPXMock:
                 "url": url,
                 "method": method.upper(),
                 "json": json,
+                "text": text,
                 "status_code": status_code,
             }
         )
@@ -108,7 +111,11 @@ def httpx_mock(monkeypatch):
             raise exception
         status_code = entry["status_code"]
         payload = entry["json"]
+        text = entry["text"]
         assert isinstance(status_code, int)
+        if text is not None:
+            assert isinstance(text, str)
+            return httpx.Response(status_code=status_code, text=text, request=request)
         return httpx.Response(status_code=status_code, json=payload, request=request)
 
     monkeypatch.setattr(httpx.AsyncClient, "post", _mocked_post)
@@ -149,6 +156,42 @@ def _extract_audio_url(messages: list[dict[str, object]]) -> str:
                     if isinstance(url, str):
                         return url
     raise AssertionError("No audio_url content part found")
+
+
+class _TrainingLogRawCaptureRecorder:
+    def __init__(self) -> None:
+        self.attempts: list[dict[str, object]] = []
+
+    def record_provider_attempt(self, **attempt: object) -> None:
+        self.attempts.append(dict(attempt))
+
+    def serialized(self) -> str:
+        return json.dumps({"attempts": self.attempts}, sort_keys=True)
+
+
+def _assert_capture_has_no_secrets(serialized: str) -> None:
+    assert "super-secret-key" not in serialized
+    assert "backup-secret-key" not in serialized
+    assert "Authorization" not in serialized
+    assert "Bearer" not in serialized
+
+
+def _raise_missing_capture_hook(error: TypeError, httpx_mock: _SimpleHTTPXMock) -> None:
+    httpx_mock._responses.clear()
+    raise AssertionError("training-log raw capture hook is not implemented") from error
+
+
+def _pipeline_training_log_collector() -> TrainingLogCollector:
+    return TrainingLogCollector(
+        request_id="req-123",
+        timestamp="2026-05-16T12:34:56Z",
+        profile="default",
+        session="session-1",
+        response_format="json",
+        filename="clip.wav",
+        input_format="wav",
+        audio=b"fake audio",
+    )
 
 
 @pytest.fixture
@@ -341,6 +384,559 @@ async def test_chat_task_without_messages_uses_audio_only_payload(
             ],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_training_log_raw_capture_records_stt_response_without_changing_string_return(
+    httpx_mock,
+):
+    import httpx
+
+    from app.services.stt import execute_stt_task
+
+    recorder = _TrainingLogRawCaptureRecorder()
+    provider_client = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="super-secret-key",
+        provider_id="openai",
+    )
+    task = TaskConfig(
+        tag="qwen",
+        type="transcriptions",
+        model="openai/whisper-1",
+        need_audio=True,
+        prompt="transcribe clearly",
+        model_params={"language": "en", "temperature": 0},
+    )
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/audio/transcriptions",
+        json={"text": "hello world", "duration": 1.23},
+        method="POST",
+    )
+
+    result: str | None = None
+    try:
+        async with httpx.AsyncClient() as client:
+            result = await cast(Any, execute_stt_task)(
+                provider_client=provider_client,
+                task=task,
+                audio_bytes=b"fake audio",
+                filename="clip.wav",
+                content_type="audio/wav",
+                client=client,
+                model_name="whisper-1",
+                capture_recorder=recorder,
+                task_path="stt.qwen",
+            )
+    except TypeError as error:
+        _raise_missing_capture_hook(error, httpx_mock)
+
+    assert result == "hello world"
+    assert isinstance(result, str)
+    assert recorder.attempts == [
+        {
+            "task_path": "stt.qwen",
+            "provider": "openai",
+            "model": "whisper-1",
+            "endpoint": "/audio/transcriptions",
+            "status": "success",
+            "request": {
+                "model": "whisper-1",
+                "stream": False,
+                "prompt": "transcribe clearly",
+                "language": "en",
+                "temperature": 0,
+                "file": {
+                    "filename": "clip.wav",
+                    "content_type": "audio/wav",
+                    "size_bytes": 10,
+                },
+            },
+            "response": {
+                "raw_json": {"text": "hello world", "duration": 1.23},
+                "extracted": {"text": "hello world"},
+            },
+        }
+    ]
+    _assert_capture_has_no_secrets(recorder.serialized())
+
+
+@pytest.mark.asyncio
+async def test_training_log_raw_capture_records_llm_response_without_changing_string_return(
+    httpx_mock,
+):
+    import httpx
+
+    from app.services.llm import execute_chat_task
+
+    recorder = _TrainingLogRawCaptureRecorder()
+    provider_client = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="super-secret-key",
+        provider_id="openai",
+    )
+    task = TaskConfig(
+        tag="final",
+        type="chat",
+        model="openai/gpt-4o",
+        need_audio=False,
+        messages=[MessageConfig(role="user", content="correct hello world")],
+        model_params={"temperature": 0.2, "top_p": 0.9},
+    )
+    resolved_messages = [{"role": "user", "content": "correct hello world"}]
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={
+            "choices": [{"message": {"content": "corrected hello world"}}],
+            "usage": {"total_tokens": 42},
+        },
+        method="POST",
+    )
+
+    result: str | None = None
+    try:
+        async with httpx.AsyncClient() as client:
+            result = await cast(Any, execute_chat_task)(
+                provider_client=provider_client,
+                task=task,
+                resolved_messages=resolved_messages,
+                audio_bytes=None,
+                audio_input_format="wav",
+                client=client,
+                model_name="gpt-4o",
+                capture_recorder=recorder,
+                task_path="correct.final",
+            )
+    except TypeError as error:
+        _raise_missing_capture_hook(error, httpx_mock)
+
+    assert result == "corrected hello world"
+    assert isinstance(result, str)
+    assert recorder.attempts == [
+        {
+            "task_path": "correct.final",
+            "provider": "openai",
+            "model": "gpt-4o",
+            "endpoint": "/chat/completions",
+            "status": "success",
+            "request": {
+                "model": "gpt-4o",
+                "messages": resolved_messages,
+                "stream": False,
+                "temperature": 0.2,
+                "top_p": 0.9,
+            },
+            "response": {
+                "raw_json": {
+                    "choices": [{"message": {"content": "corrected hello world"}}],
+                    "usage": {"total_tokens": 42},
+                },
+                "extracted": {"content": "corrected hello world"},
+            },
+        }
+    ]
+    _assert_capture_has_no_secrets(recorder.serialized())
+
+
+@pytest.mark.asyncio
+async def test_training_log_raw_capture_records_fallback_attempts_without_secrets(
+    httpx_mock,
+):
+    import httpx
+
+    from app.services.providers import call_with_fallback
+
+    recorder = _TrainingLogRawCaptureRecorder()
+    primary = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="super-secret-key",
+        provider_id="openai",
+    )
+    backup = ProviderClient(
+        base_url="http://localhost:8081/v1",
+        api_key="backup-secret-key",
+        provider_id="backup",
+    )
+    messages = [{"role": "user", "content": "correct hello world"}]
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        status_code=500,
+        json={"error": {"message": "primary failed"}},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8081/v1/chat/completions",
+        json={
+            "choices": [{"message": {"content": "corrected hello world"}}],
+            "usage": {"total_tokens": 42},
+        },
+        method="POST",
+    )
+
+    result: str | None = None
+    try:
+        async with httpx.AsyncClient() as client:
+            result = await cast(Any, call_with_fallback)(
+                models=[(primary, "gpt-4o"), (backup, "gpt-4o-mini")],
+                task_path="correct.final",
+                capture_recorder=recorder,
+                call_fn=lambda provider_client, model_name: cast(
+                    Any, provider_client.post_chat
+                )(
+                    client=client,
+                    messages=messages,
+                    model=model_name,
+                    model_params={"temperature": 0.2},
+                    capture_recorder=recorder,
+                    task_path="correct.final",
+                ),
+            )
+    except TypeError as error:
+        _raise_missing_capture_hook(error, httpx_mock)
+
+    assert result == "corrected hello world"
+    assert isinstance(result, str)
+    assert [attempt["status"] for attempt in recorder.attempts] == ["error", "success"]
+    assert recorder.attempts[0]["provider"] == "openai"
+    assert recorder.attempts[0]["model"] == "gpt-4o"
+    assert recorder.attempts[0]["response"] == {
+        "raw_json": {"error": {"message": "primary failed"}},
+        "status_code": 500,
+    }
+    assert recorder.attempts[1]["provider"] == "backup"
+    assert recorder.attempts[1]["model"] == "gpt-4o-mini"
+    second_request = cast(dict[str, object], recorder.attempts[1]["request"])
+    assert second_request["temperature"] == 0.2
+    assert recorder.attempts[1]["response"] == {
+        "raw_json": {
+            "choices": [{"message": {"content": "corrected hello world"}}],
+            "usage": {"total_tokens": 42},
+        },
+        "extracted": {"content": "corrected hello world"},
+    }
+    _assert_capture_has_no_secrets(recorder.serialized())
+
+
+@pytest.mark.asyncio
+async def test_training_log_raw_capture_records_non_json_fallback_parse_error(
+    httpx_mock,
+):
+    import httpx
+
+    from app.services.providers import call_with_fallback
+
+    recorder = _TrainingLogRawCaptureRecorder()
+    primary = ProviderClient(
+        base_url="http://localhost:8080/v1",
+        api_key="super-secret-key",
+        provider_id="openai",
+    )
+    backup = ProviderClient(
+        base_url="http://localhost:8081/v1",
+        api_key="backup-secret-key",
+        provider_id="backup",
+    )
+    messages = [{"role": "user", "content": "correct hello world"}]
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        status_code=502,
+        text="upstream gateway failure",
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8081/v1/chat/completions",
+        json={"choices": [{"message": {"content": "fallback ok"}}]},
+        method="POST",
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await cast(Any, call_with_fallback)(
+            models=[(primary, "gpt-4o"), (backup, "gpt-4o-mini")],
+            task_path="correct.final",
+            capture_recorder=recorder,
+            call_fn=lambda provider_client, model_name: cast(
+                Any, provider_client.post_chat
+            )(
+                client=client,
+                messages=messages,
+                model=model_name,
+                capture_recorder=recorder,
+                task_path="correct.final",
+            ),
+        )
+
+    assert result == "fallback ok"
+    assert [attempt["status"] for attempt in recorder.attempts] == ["error", "success"]
+    error_response = cast(dict[str, object], recorder.attempts[0]["response"])
+    assert error_response["raw_text"] == "upstream gateway failure"
+    assert error_response["status_code"] == 502
+    parse_error = cast(dict[str, object], error_response["parse_error"])
+    assert parse_error["type"] == "JSONDecodeError"
+    assert isinstance(parse_error["message"], str)
+    assert "raw_json" not in error_response
+    success_response = cast(dict[str, object], recorder.attempts[1]["response"])
+    assert success_response["raw_json"] == {
+        "choices": [{"message": {"content": "fallback ok"}}]
+    }
+    assert success_response["extracted"] == {"content": "fallback ok"}
+    _assert_capture_has_no_secrets(recorder.serialized())
+
+
+@pytest.mark.asyncio
+async def test_training_log_pipeline_preserves_config_order_for_parallel_tasks(
+    app_config, httpx_mock
+):
+    import httpx
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                tasks=[
+                    TaskConfig(
+                        tag="first",
+                        type="transcriptions",
+                        model="openai/whisper-1",
+                        need_audio=True,
+                    ),
+                    TaskConfig(
+                        tag="second",
+                        type="transcriptions",
+                        model="openai/whisper-1",
+                        need_audio=True,
+                    ),
+                ],
+            ),
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        need_audio=False,
+                        messages=[
+                            MessageConfig(
+                                role="user",
+                                content="Fix {stt.first.result} and {stt.second.result}",
+                            )
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+    collector = _pipeline_training_log_collector()
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/audio/transcriptions",
+        json={"text": "first text"},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/audio/transcriptions",
+        json={"text": "second text"},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "final text"}}]},
+        method="POST",
+    )
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config,
+            client=client,
+            audio_bytes=b"fake audio",
+            training_log_collector=collector,
+        )
+
+    assert results == {
+        "stt.first": "first text",
+        "stt.second": "second text",
+        "correct.final": "final text",
+    }
+    payload = collector.to_json(output="final text")
+    tasks = cast(list[dict[str, Any]], payload["tasks"])
+    assert [task["path"] for task in tasks] == [
+        "stt.first",
+        "stt.second",
+        "correct.final",
+    ]
+    assert [(task["block_index"], task["task_index"]) for task in tasks] == [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+    ]
+    assert tasks[0]["type"] == "transcriptions"
+    assert tasks[0]["model"] == "openai/whisper-1"
+    assert tasks[0]["request"]["file"] == {
+        "filename": "audio.wav",
+        "content_type": "audio/wav",
+        "size_bytes": 10,
+    }
+    assert "provider_attempts" not in tasks[0]
+    assert isinstance(tasks[0]["attempts"], list)
+    assert tasks[0]["response"] == {
+        "raw_json": {"text": "first text"},
+        "extracted": {"text": "first text"},
+    }
+    assert tasks[0]["extracted"] == {"text": "first text"}
+    assert tasks[2]["extracted"] == {"content": "final text"}
+
+
+@pytest.mark.asyncio
+async def test_training_log_pipeline_records_chat_context_and_model_params(
+    app_config, httpx_mock
+):
+    import httpx
+
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="stt",
+                tasks=[
+                    TaskConfig(
+                        tag="qwen",
+                        type="transcriptions",
+                        model="openai/whisper-1",
+                        need_audio=True,
+                    )
+                ],
+            ),
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        need_audio=False,
+                        messages=[
+                            MessageConfig(role="system", content="Be concise"),
+                            MessageConfig(role="user", content="Fix {stt.qwen.result}"),
+                        ],
+                        model_params={"temperature": 0.2, "top_p": 0.9},
+                    )
+                ],
+            ),
+        ],
+    )
+    collector = _pipeline_training_log_collector()
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/audio/transcriptions",
+        json={"text": "helo wrld"},
+        method="POST",
+    )
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={
+            "choices": [{"message": {"content": "hello world"}}],
+            "usage": {"total_tokens": 12},
+        },
+        method="POST",
+    )
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config,
+            client=client,
+            audio_bytes=b"fake audio",
+            training_log_collector=collector,
+        )
+
+    assert results["correct.final"] == "hello world"
+    tasks = cast(list[dict[str, Any]], collector.to_json(output="hello world")["tasks"])
+    chat_request = cast(dict[str, Any], tasks[1]["request"])
+    assert chat_request["messages"] == [
+        {"role": "system", "content": "Be concise"},
+        {"role": "user", "content": "Fix helo wrld"},
+    ]
+    assert chat_request["temperature"] == 0.2
+    assert chat_request["top_p"] == 0.9
+    assert tasks[1]["attempts"][0]["response"] == {
+        "raw_json": {
+            "choices": [{"message": {"content": "hello world"}}],
+            "usage": {"total_tokens": 12},
+        },
+        "extracted": {"content": "hello world"},
+    }
+    assert tasks[1]["extracted"] == {"content": "hello world"}
+
+
+@pytest.mark.asyncio
+async def test_training_log_pipeline_audio_dedup_omits_nested_chat_audio_base64(
+    app_config, httpx_mock
+):
+    import httpx
+
+    audio_bytes = b"fake audio"
+    pipeline = PipelineConfig(
+        output="{correct.final.result}",
+        blocks=[
+            BlockConfig(
+                tag="correct",
+                tasks=[
+                    TaskConfig(
+                        tag="final",
+                        type="chat",
+                        model="openai/gpt-4o",
+                        need_audio=True,
+                        messages=[MessageConfig(role="user", content="Describe this")],
+                    )
+                ],
+            )
+        ],
+    )
+    collector = _pipeline_training_log_collector()
+
+    httpx_mock.add_response(
+        url="http://localhost:8080/v1/chat/completions",
+        json={"choices": [{"message": {"content": "audio summary"}}]},
+        method="POST",
+    )
+
+    async with httpx.AsyncClient() as client:
+        results = await run_pipeline(
+            preset=pipeline,
+            models_config=app_config,
+            client=client,
+            audio_bytes=audio_bytes,
+            training_log_collector=collector,
+        )
+
+    assert results["correct.final"] == "audio summary"
+    payload = collector.to_json(output="audio summary")
+    audio = cast(dict[str, Any], payload["audio"])
+    tasks = cast(list[dict[str, Any]], payload["tasks"])
+    assert audio["base64"] == "ZmFrZSBhdWRpbw=="
+    request = cast(dict[str, Any], tasks[0]["request"])
+    assert request["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this"},
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": AUDIO_OMITTED_MARKER,
+                        "format": "wav",
+                    },
+                },
+            ],
+        }
+    ]
+    assert json.dumps(payload, sort_keys=True).count("ZmFrZSBhdWRpbw==") == 1
 
 
 def test_get_pipeline_output():
