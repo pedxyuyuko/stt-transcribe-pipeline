@@ -5,6 +5,9 @@ default_preset: "default"
 # Drop a session's retained context after this many idle minutes.
 # Set to null or omit to keep in-memory session history until process restart.
 session_idle_timeout_minutes: 10
+training_log:
+  enable: false
+  path: "training_logs"
 providers:
   openrouter:
     base_url: "https://openrouter.ai/api/v1"

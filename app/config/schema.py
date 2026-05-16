@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Any, Literal, Dict, List
 
 
@@ -14,6 +14,17 @@ VARIABLE_REFERENCE_PATTERN = re.compile(
 )
 
 
+class TrainingLogConfig(BaseModel):
+    enable: bool = False
+    path: str | None = None
+
+    @model_validator(mode="after")
+    def training_log_fields_valid(self) -> TrainingLogConfig:
+        if self.enable and not self.path:
+            raise ValueError("'training_log.path' is required when 'training_log.enable' is true.")
+        return self
+
+
 class AppConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
@@ -23,6 +34,7 @@ class AppConfig(BaseModel):
     model_groups: Dict[str, List[str]] = {}
     log_level: str = "INFO"
     session_idle_timeout_minutes: int | None = None
+    training_log: TrainingLogConfig = Field(default_factory=TrainingLogConfig)
 
     @field_validator("log_level")
     @classmethod

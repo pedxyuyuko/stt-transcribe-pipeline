@@ -98,6 +98,46 @@ class TestAppConfig:
                 session_idle_timeout_minutes=0,
             )
 
+    def test_training_log_defaults_disabled_without_path(self):
+        cfg = AppConfig(api_key="sk-test", default_preset="default")
+
+        assert cfg.training_log.enable is False
+        assert cfg.training_log.path is None
+
+    def test_training_log_accepts_disabled_without_path(self):
+        cfg = AppConfig.model_validate(
+            {
+                "api_key": "sk-test",
+                "default_preset": "default",
+                "training_log": {"enable": False},
+            }
+        )
+
+        assert cfg.training_log.enable is False
+        assert cfg.training_log.path is None
+
+    def test_training_log_accepts_disabled_with_empty_path(self):
+        cfg = AppConfig.model_validate(
+            {
+                "api_key": "sk-test",
+                "default_preset": "default",
+                "training_log": {"enable": False, "path": ""},
+            }
+        )
+
+        assert cfg.training_log.enable is False
+        assert cfg.training_log.path == ""
+
+    def test_training_log_requires_non_empty_path_when_enabled(self):
+        with pytest.raises(ValidationError, match="training_log|path"):
+            AppConfig.model_validate(
+                {
+                    "api_key": "sk-test",
+                    "default_preset": "default",
+                    "training_log": {"enable": True},
+                }
+            )
+
 
 class TestPipelineConfig:
     def test_valid_pipeline_config(self):
@@ -547,6 +587,35 @@ class TestLoadAllConfigs:
             assert "default" in presets
             assert "openai" in app_cfg.providers
             assert "smart" in app_cfg.model_groups
+
+    def test_load_all_configs_training_log_missing_defaults_disabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            (tmppath / "config.yml").write_text(_full_config(default_preset="default"))
+            (tmppath / "presets").mkdir()
+            (tmppath / "presets" / "default.yaml").write_text(
+                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: smart\n        messages:\n          - role: user\n            content: hello'
+            )
+
+            app_cfg, presets = load_all_configs(tmppath)
+
+            assert app_cfg.training_log.enable is False
+            assert app_cfg.training_log.path is None
+            assert "default" in presets
+
+    def test_load_all_configs_training_log_enabled_requires_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            (tmppath / "config.yml").write_text(
+                _full_config(default_preset="default", extra="training_log:\n  enable: true\n")
+            )
+            (tmppath / "presets").mkdir()
+            (tmppath / "presets" / "default.yaml").write_text(
+                'output: "{a.x.result}"\nblocks:\n  - tag: a\n    tasks:\n      - tag: x\n        type: chat\n        model: smart\n        messages:\n          - role: user\n            content: hello'
+            )
+
+            with pytest.raises(ConfigError, match="training_log|path"):
+                load_all_configs(tmppath)
 
     def test_nonexistent_directory(self):
         with pytest.raises(ConfigError):
