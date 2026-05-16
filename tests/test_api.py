@@ -1,3 +1,5 @@
+import base64
+import json
 import wave
 from io import BytesIO
 
@@ -6,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from app.api import transcription as transcription_module
+from app.config.schema import TrainingLogConfig
 
 
 def _sample_wav_bytes(frame_count: int = 160) -> bytes:
@@ -227,7 +230,17 @@ class TestTranscriptionModelParsing:
             }
         }
 
-    def test_malformed_model_with_extra_separator_content_is_rejected(self):
+    def test_model_with_slash_in_session_routes_full_session(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        async def fake_handle_transcription(**kwargs):
+            captured.update(kwargs)
+            return JSONResponse(content={"text": "ok"})
+
+        monkeypatch.setattr(
+            transcription_module, "_handle_transcription", fake_handle_transcription
+        )
+
         with TestClient(app) as client:
             response = client.post(
                 "/v1/audio/transcriptions",
@@ -235,14 +248,10 @@ class TestTranscriptionModelParsing:
                 data={"model": "default/user-123/extra"},
             )
 
-        assert response.status_code == 500
-        assert response.json() == {
-            "error": {
-                "message": "Invalid model value. Expected 'preset_id' or 'preset_id/session_id'.",
-                "type": "invalid_request_error",
-                "code": "invalid_model",
-            }
-        }
+        assert response.status_code == 200
+        assert response.json() == {"text": "ok"}
+        assert captured["preset_name"] == "default"
+        assert captured["user_session_id"] == "user-123/extra"
 
     def test_path_based_preset_route_removed(self):
         with TestClient(app) as client:
@@ -295,6 +304,236 @@ class TestResponseFormatAndFileLimits:
 
         assert response.status_code == 200
         assert response.json() == {"text": "ok"}
+
+
+class TestTrainingLogApiSuccess:
+    def test_training_log_success_writes_one_json_file_after_output_resolved(
+        self, monkeypatch, tmp_path
+    ):
+        log_dir = tmp_path / "training-logs"
+        audio = _sample_wav_bytes(frame_count=8)
+        captured: dict[str, object] = {}
+
+        async def fake_run_pipeline(**kwargs):
+            captured.update(kwargs)
+            assert kwargs["training_log_collector"] is not None
+            return {"stt.transcribe": "raw transcript"}
+
+        monkeypatch.setattr(transcription_module, "generate_session_id", lambda: "18471234")
+        monkeypatch.setattr(
+            transcription_module, "_utc_timestamp", lambda: "2026-05-16T00:00:00Z"
+        )
+        monkeypatch.setattr(transcription_module, "run_pipeline", fake_run_pipeline)
+        monkeypatch.setattr(
+            transcription_module,
+            "get_pipeline_output",
+            lambda output, results: "final transcript",
+        )
+
+        with TestClient(app) as client:
+            monkeypatch.setattr(
+                app.state.app_config,
+                "training_log",
+                TrainingLogConfig(enable=True, path=str(log_dir)),
+            )
+            response = client.post(
+                "/v1/audio/transcriptions",
+                files={"file": ("clip.mp3", audio, "audio/mpeg")},
+                data={"model": "default/user abc/../evil", "response_format": "json"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"text": "final transcript"}
+        assert captured["audio_input_format"] == "mp3"
+        assert captured["audio_bytes"] == audio
+
+        log_files = sorted(log_dir.glob("*.json"))
+        assert [path.name for path in log_files] == [
+            "default-user_abc_evil-18471234.json"
+        ]
+        payload = json.loads(log_files[0].read_text(encoding="utf-8"))
+        assert payload["request"] == {
+            "id": "18471234",
+            "timestamp": "2026-05-16T00:00:00Z",
+            "profile": "default",
+            "session": "user abc/../evil",
+            "response_format": "json",
+        }
+        assert payload["audio"]["filename"] == "clip.mp3"
+        assert payload["audio"]["input_format"] == "mp3"
+        assert payload["audio"]["size_bytes"] == len(audio)
+        assert payload["audio"]["base64"] == base64.b64encode(audio).decode("utf-8")
+        assert payload["output"] == {"text": "final transcript"}
+
+    def test_training_log_disabled_writes_no_directory_or_file(
+        self, monkeypatch, tmp_path
+    ):
+        log_dir = tmp_path / "disabled-training-logs"
+        captured: dict[str, object] = {}
+
+        async def fake_run_pipeline(**kwargs):
+            captured.update(kwargs)
+            return {"stt.transcribe": "raw transcript"}
+
+        monkeypatch.setattr(transcription_module, "generate_session_id", lambda: "18471234")
+        monkeypatch.setattr(transcription_module, "run_pipeline", fake_run_pipeline)
+        monkeypatch.setattr(
+            transcription_module,
+            "get_pipeline_output",
+            lambda output, results: "final transcript",
+        )
+
+        with TestClient(app) as client:
+            monkeypatch.setattr(
+                app.state.app_config,
+                "training_log",
+                TrainingLogConfig(enable=False, path=str(log_dir)),
+            )
+            response = client.post(
+                "/v1/audio/transcriptions",
+                files={"file": ("test.wav", _sample_wav_bytes(), "audio/wav")},
+                data={"model": "default", "response_format": "json"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"text": "final transcript"}
+        assert captured["training_log_collector"] is None
+        assert not log_dir.exists()
+
+    def test_training_log_checkpoint_fallback_writes_no_file(
+        self, monkeypatch, tmp_path
+    ):
+        log_dir = tmp_path / "fallback-training-logs"
+
+        async def fake_run_pipeline(**kwargs):
+            assert kwargs["training_log_collector"] is not None
+            raise transcription_module.PipelineFallback(
+                failed_block="correction",
+                failed_task="fix",
+                fallback_value="checkpoint transcript",
+                results={"stt.transcribe": "checkpoint transcript"},
+                original_error=Exception("correction failed"),
+            )
+
+        def fail_if_writer_created(path):
+            raise AssertionError("training log writer must not be created on fallback")
+
+        monkeypatch.setattr(transcription_module, "generate_session_id", lambda: "18471234")
+        monkeypatch.setattr(transcription_module, "run_pipeline", fake_run_pipeline)
+        monkeypatch.setattr(
+            transcription_module, "TrainingLogWriter", fail_if_writer_created
+        )
+
+        with TestClient(app) as client:
+            monkeypatch.setattr(
+                app.state.app_config,
+                "training_log",
+                TrainingLogConfig(enable=True, path=str(log_dir)),
+            )
+            response = client.post(
+                "/v1/audio/transcriptions",
+                files={"file": ("test.wav", _sample_wav_bytes(), "audio/wav")},
+                data={"model": "default", "response_format": "json"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"text": "checkpoint transcript"}
+        assert not log_dir.exists()
+
+    def test_training_log_hard_pipeline_failure_writes_no_file(
+        self, monkeypatch, tmp_path
+    ):
+        log_dir = tmp_path / "failure-training-logs"
+
+        async def fake_run_pipeline(**kwargs):
+            assert kwargs["training_log_collector"] is not None
+            raise transcription_module.PipelineError(
+                block_tag="stt",
+                task_tag="transcribe",
+                original_error=Exception("provider failed"),
+            )
+
+        def fail_if_writer_created(path):
+            raise AssertionError("training log writer must not be created on failure")
+
+        monkeypatch.setattr(transcription_module, "generate_session_id", lambda: "18471234")
+        monkeypatch.setattr(transcription_module, "run_pipeline", fake_run_pipeline)
+        monkeypatch.setattr(
+            transcription_module, "TrainingLogWriter", fail_if_writer_created
+        )
+
+        with TestClient(app) as client:
+            monkeypatch.setattr(
+                app.state.app_config,
+                "training_log",
+                TrainingLogConfig(enable=True, path=str(log_dir)),
+            )
+            response = client.post(
+                "/v1/audio/transcriptions",
+                files={"file": ("test.wav", _sample_wav_bytes(), "audio/wav")},
+                data={"model": "default", "response_format": "json"},
+            )
+
+        assert response.status_code == 500
+        assert response.json()["error"]["code"] == "pipeline_error"
+        assert not log_dir.exists()
+
+    def test_training_log_write_failure_warns_and_returns_success(
+        self, monkeypatch, tmp_path
+    ):
+        log_dir = tmp_path / "write-failure-training-logs"
+        warnings: list[tuple[str, tuple[object, ...]]] = []
+        write_attempts: list[dict[str, object]] = []
+
+        async def fake_run_pipeline(**kwargs):
+            assert kwargs["training_log_collector"] is not None
+            return {"stt.transcribe": "raw transcript"}
+
+        class FailingTrainingLogWriter:
+            def __init__(self, path):
+                assert path == str(log_dir)
+
+            def write(self, payload: dict[str, object]):
+                write_attempts.append(payload)
+                raise OSError("disk full")
+
+        def fake_warning(message, *args, **kwargs):
+            warnings.append((message, args))
+
+        monkeypatch.setattr(transcription_module, "generate_session_id", lambda: "18471234")
+        monkeypatch.setattr(transcription_module, "run_pipeline", fake_run_pipeline)
+        monkeypatch.setattr(
+            transcription_module,
+            "get_pipeline_output",
+            lambda output, results: "final transcript",
+        )
+        monkeypatch.setattr(
+            transcription_module, "TrainingLogWriter", FailingTrainingLogWriter
+        )
+        monkeypatch.setattr(transcription_module.logger, "warning", fake_warning)
+
+        with TestClient(app) as client:
+            monkeypatch.setattr(
+                app.state.app_config,
+                "training_log",
+                TrainingLogConfig(enable=True, path=str(log_dir)),
+            )
+            response = client.post(
+                "/v1/audio/transcriptions",
+                files={"file": ("test.wav", _sample_wav_bytes(), "audio/wav")},
+                data={"model": "default", "response_format": "json"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"text": "final transcript"}
+        assert len(write_attempts) == 1
+        assert write_attempts[0]["output"] == {"text": "final transcript"}
+        assert warnings == [
+            (
+                "Training log write failed; continuing without writing training log: {}",
+                ("disk full",),
+            )
+        ]
 
 
 class TestSessionAwareDegradation:

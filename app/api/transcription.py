@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Form, UploadFile, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -15,6 +16,7 @@ from app.engine.pipeline import (
     PipelineFallback,
 )
 from app.services.providers import AllModelsFailedError
+from app.services.training_log import TrainingLogCollector, TrainingLogWriter
 from app.logger import generate_session_id, set_session_id, set_context
 
 router = APIRouter()
@@ -50,9 +52,6 @@ def _openai_error(message: str, error_type: str, code: str) -> JSONResponse:
 
 
 def _parse_model_selector(model: str) -> tuple[str, str | None] | None:
-    if model.count("/") > 1:
-        return None
-
     if "/" not in model:
         return model, None
 
@@ -71,6 +70,10 @@ def _infer_audio_input_format(filename: str | None) -> str:
 
     _, ext = os.path.splitext(filename)
     return SUPPORTED_AUDIO_INPUT_FORMATS.get(ext.lower(), "wav")
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 async def _handle_transcription(
@@ -116,6 +119,20 @@ async def _handle_transcription(
             content=ERROR_FILE_TOO_LARGE,
         )
 
+    training_log_config = request.app.state.app_config.training_log
+    training_log_collector: TrainingLogCollector | None = None
+    if training_log_config.enable:
+        training_log_collector = TrainingLogCollector(
+            request_id=session_id,
+            timestamp=_utc_timestamp(),
+            profile=preset_name,
+            session=user_session_id,
+            response_format=response_format,
+            filename=audio_filename,
+            input_format=audio_input_format,
+            audio=audio_bytes,
+        )
+
     # --- start timer ---
     start_time = time.monotonic()
 
@@ -128,6 +145,8 @@ async def _handle_transcription(
             audio_bytes=audio_bytes,
             audio_filename=audio_filename,
             audio_input_format=audio_input_format,
+            session_history_store=request.app.state.session_history_store,
+            training_log_collector=training_log_collector,
         )
     except PipelineError as e:
         logger.error(
@@ -176,6 +195,16 @@ async def _handle_transcription(
     # --- end timer + elapsed time log (info level) ---
     elapsed = time.monotonic() - start_time
     final_text = get_pipeline_output(preset.output, results)
+
+    if training_log_collector is not None:
+        payload = training_log_collector.to_json(output=final_text)
+        try:
+            TrainingLogWriter(training_log_config.path).write(payload)
+        except OSError as e:
+            logger.warning(
+                "Training log write failed; continuing without writing training log: {}",
+                str(e),
+            )
 
     logger.info("Pipeline completed | elapsed={:.3f}s", elapsed)
     logger.debug("Final transcription result: {}", final_text)
