@@ -1,4 +1,5 @@
 .sisyphus/
+training_logs/
 AGENTS.md
 
 # Sensitive config (API keys)
